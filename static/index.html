@@ -1,0 +1,458 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MONARCH PRO — Equity Terminal</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@300;400;600;700&display=swap" rel="stylesheet">
+<style>
+:root{--amber:#ff8c00;--amber2:#ffb347;--green:#00d084;--red:#ff3b3b;--blue:#1e90ff;
+      --bg:#0a0a0a;--surface:#111;--border:#2a2a2a;--muted:#888;--dim:#555;
+      --mono:'IBM Plex Mono',monospace;}
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0;}
+html,body{background:var(--bg);color:#e8e8e8;font-family:var(--mono);font-size:12px;min-height:100vh;}
+::-webkit-scrollbar{width:6px;height:6px;}::-webkit-scrollbar-track{background:#0a0a0a;}
+::-webkit-scrollbar-thumb{background:#333;}::-webkit-scrollbar-thumb:hover{background:var(--amber);}
+
+/* Layout */
+.terminal{display:flex;flex-direction:column;height:100vh;}
+.main-area{display:flex;flex:1;overflow:hidden;}
+.sidebar{width:220px;flex-shrink:0;background:#080808;border-right:1px solid var(--border);
+         overflow-y:auto;display:flex;flex-direction:column;}
+.content{flex:1;overflow:auto;padding:12px 16px;}
+
+/* Sidebar */
+.sidebar-section{padding:10px 14px;border-bottom:1px solid #1a1a1a;}
+.sidebar-label{color:var(--muted);font-size:.55rem;letter-spacing:.12em;text-transform:uppercase;
+               margin-bottom:6px;display:block;}
+.ctrl-select,.ctrl-input{width:100%;background:#0d0d0d;border:1px solid #222;color:#e8e8e8;
+                          font-family:var(--mono);font-size:.68rem;padding:5px 8px;outline:none;margin-bottom:6px;}
+.ctrl-select:focus,.ctrl-input:focus{border-color:var(--amber);}
+.btn-full{width:100%;background:#140e00;color:var(--amber);border:1px solid var(--amber);
+          font-family:var(--mono);font-size:.65rem;font-weight:700;letter-spacing:.10em;
+          text-transform:uppercase;padding:7px 0;cursor:pointer;margin-bottom:4px;}
+.btn-full:hover{background:var(--amber);color:#000;}
+.btn-full:disabled{opacity:.4;cursor:not-allowed;}
+.btn-sm{background:transparent;color:var(--muted);border:1px solid #222;font-family:var(--mono);
+        font-size:.60rem;padding:4px 8px;cursor:pointer;width:100%;margin-bottom:4px;}
+.btn-sm:hover{border-color:var(--amber);color:var(--amber);}
+.progress-bar{height:3px;background:#1a1a1a;margin-top:4px;}
+.progress-fill{height:3px;background:var(--amber);transition:width .3s;}
+.status-text{font-size:.58rem;color:var(--muted);margin-top:4px;}
+
+/* Market context */
+.mkt-row{display:flex;justify-content:space-between;align-items:center;
+         padding:3px 0;font-size:.62rem;border-bottom:1px solid #1a1a1a;}
+.mkt-row:last-child{border-bottom:none;}
+.mkt-key{color:var(--muted);}
+.mkt-val{font-weight:600;}
+.bull{color:var(--green)!important;}
+.bear{color:var(--red)!important;}
+.neu{color:var(--amber)!important;}
+
+/* Table */
+.page-title{color:var(--amber);font-size:.90rem;font-weight:700;letter-spacing:.16em;
+            text-transform:uppercase;margin-bottom:12px;display:flex;align-items:center;gap:10px;}
+.filter-row{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px;align-items:center;}
+.filter-input{background:#0d0d0d;border:1px solid #222;color:#e8e8e8;font-family:var(--mono);
+              font-size:.65rem;padding:4px 8px;outline:none;width:160px;}
+.filter-input:focus{border-color:var(--amber);}
+.filter-label{color:var(--muted);font-size:.58rem;letter-spacing:.08em;text-transform:uppercase;}
+.filter-select{background:#0d0d0d;border:1px solid #222;color:#e8e8e8;font-family:var(--mono);
+               font-size:.65rem;padding:4px 8px;outline:none;}
+.results-count{color:var(--muted);font-size:.60rem;margin-left:auto;}
+
+.table-wrap{overflow-x:auto;}
+table{width:100%;border-collapse:collapse;font-size:.64rem;}
+thead{position:sticky;top:0;z-index:2;}
+th{background:#0d0d00;color:var(--amber);font-size:.56rem;font-weight:700;letter-spacing:.10em;
+   text-transform:uppercase;padding:6px 8px;text-align:right;border-bottom:2px solid var(--amber);
+   white-space:nowrap;cursor:pointer;user-select:none;}
+th:first-child,th:nth-child(2){text-align:left;}
+th:hover{color:var(--amber2);}
+td{padding:4px 8px;text-align:right;border-bottom:1px solid #161616;white-space:nowrap;color:#b8b8b8;}
+td:first-child,td:nth-child(2){text-align:left;}
+tr:hover td{background:#140e00;color:var(--amber2);}
+.rank-cell{color:var(--dim);font-size:.58rem;}
+.ticker-cell{color:var(--amber2);font-weight:700;cursor:pointer;}
+.ticker-cell:hover{color:var(--amber);text-decoration:underline;}
+.score-cell{font-weight:700;}
+.tag{display:inline-block;font-size:.52rem;padding:1px 5px;margin-left:3px;border-radius:2px;}
+.tag-vcp{background:#001a10;color:var(--green);border:1px solid #00d08444;}
+.tag-bo{background:#1a0e00;color:var(--amber);border:1px solid #ff8c0044;}
+.tag-oi{background:#0a0015;color:var(--blue);border:1px solid #1e90ff44;}
+
+/* Signal dots */
+.sig{display:inline-block;width:7px;height:7px;border-radius:50%;margin-right:2px;}
+.sig-g{background:var(--green);}
+.sig-r{background:var(--red);}
+.sig-n{background:#333;}
+
+/* Empty / loading */
+.empty-state{text-align:center;padding:60px;color:var(--muted);font-size:.70rem;}
+.spinner{display:inline-block;width:16px;height:16px;border:2px solid #333;
+         border-top-color:var(--amber);border-radius:50%;animation:spin .7s linear infinite;vertical-align:middle;}
+@keyframes spin{to{transform:rotate(360deg)}}
+
+/* Sector pills */
+.sector-pills{display:flex;flex-wrap:wrap;gap:4px;margin-bottom:6px;}
+.sector-pill{font-size:.55rem;padding:2px 7px;background:#0d0d0d;border:1px solid #222;
+             color:var(--muted);cursor:pointer;}
+.sector-pill:hover,.sector-pill.active{border-color:var(--amber);color:var(--amber);}
+</style>
+</head>
+<body>
+<script src="/static/monarch-nav.js"></script>
+
+<div class="terminal">
+  <div class="main-area">
+    <!-- Sidebar -->
+    <div class="sidebar">
+      <div class="sidebar-section">
+        <span class="sidebar-label">Universe</span>
+        <select class="ctrl-select" id="universeSelect">
+          <option>Nifty 50</option>
+          <option>F&O Stocks</option>
+          <option>NSE All</option>
+        </select>
+        <span class="sidebar-label">RSI Period</span>
+        <select class="ctrl-select" id="rsiPeriod">
+          <option value="7" selected>7</option>
+          <option value="14">14</option>
+        </select>
+        <span class="sidebar-label">Min Avg Volume</span>
+        <input class="ctrl-input" id="minVol" type="number" value="100000" step="50000">
+        <label style="display:flex;align-items:center;gap:6px;font-size:.60rem;color:var(--muted);margin-bottom:8px">
+          <input type="checkbox" id="sectorCap"> Sector Cap (1 per sector)
+        </label>
+        <button class="btn-full" id="extractBtn" onclick="startExtraction()">▶ Extract Data</button>
+        <button class="btn-sm" onclick="refreshLive()">↺ Refresh Live Prices</button>
+        <div class="progress-bar"><div class="progress-fill" id="progressFill" style="width:0%"></div></div>
+        <div class="status-text" id="statusText">Ready</div>
+      </div>
+
+      <div class="sidebar-section" id="mktSection">
+        <span class="sidebar-label">Market Context</span>
+        <div id="mktContent"><div style="color:var(--dim);font-size:.58rem">Run extraction to load.</div></div>
+      </div>
+
+      <div class="sidebar-section">
+        <span class="sidebar-label">Navigate</span>
+        <a href="/options" style="text-decoration:none">
+          <button class="btn-sm" style="text-align:left">⚙ Options Intelligence</button></a>
+        <a href="/fundamentals" style="text-decoration:none">
+          <button class="btn-sm" style="text-align:left">📊 Fundamental Research</button></a>
+        <a href="/ml" style="text-decoration:none">
+          <button class="btn-sm" style="text-align:left">🤖 ML Predictor</button></a>
+      </div>
+
+      <div class="sidebar-section" id="sectorSection" style="display:none">
+        <span class="sidebar-label">Top Sectors</span>
+        <div id="sectorContent"></div>
+      </div>
+    </div>
+
+    <!-- Main content -->
+    <div class="content">
+      <div class="page-title">
+        <span>EQUITY SCREENER</span>
+        <span id="loadingSpinner" style="display:none"><span class="spinner"></span></span>
+        <span id="rowCount" style="font-size:.60rem;color:var(--muted);font-weight:400"></span>
+      </div>
+
+      <!-- Filters -->
+      <div class="filter-row">
+        <input class="filter-input" id="searchInput" placeholder="Filter ticker / sector…" oninput="applyFilters()">
+        <span class="filter-label">Sort:</span>
+        <select class="filter-select" id="sortSelect" onchange="loadScreener()">
+          <option value="CompositeRank">Composite Rank</option>
+          <option value="Score">Total Score</option>
+          <option value="RS">RS Score</option>
+          <option value="VCP">VCP</option>
+          <option value="LTP">LTP</option>
+        </select>
+        <span class="filter-label">Horizon:</span>
+        <select class="filter-select" id="horizonSelect" onchange="loadScreener()">
+          <option value="ALL">All</option>
+          <option value="SHORT">Short</option>
+          <option value="MEDIUM">Medium</option>
+          <option value="LONG">Long</option>
+        </select>
+        <span class="results-count" id="visibleCount"></span>
+      </div>
+
+      <!-- Sector pills -->
+      <div class="sector-pills" id="sectorPills"></div>
+
+      <!-- Table -->
+      <div class="table-wrap">
+        <table id="screenerTable">
+          <thead>
+            <tr>
+              <th>#</th>
+              <th onclick="sortBy('Ticker')">Ticker ↕</th>
+              <th onclick="sortBy('LTP')">LTP ↕</th>
+              <th onclick="sortBy('TotalScore')">Score ↕</th>
+              <th onclick="sortBy('CompositeRank')">CmpRank ↕</th>
+              <th onclick="sortBy('RS')">RS ↕</th>
+              <th>VCP</th>
+              <th>Horizon</th>
+              <th>Sector</th>
+              <th>Chg%</th>
+              <th>Vol</th>
+              <th>52W%</th>
+              <th>ATR%</th>
+              <th>Signals</th>
+            </tr>
+          </thead>
+          <tbody id="screenerBody">
+            <tr><td colspan="14" class="empty-state">Run extraction to populate the screener.</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+let _rows = [];
+let _filteredRows = [];
+let _sortCol = 'CompositeRank';
+let _sortAsc = false;
+let _sectorFilter = '';
+let _pollInterval = null;
+
+// ── Extraction ────────────────────────────────────────────────────────────────
+async function startExtraction() {
+  const btn = document.getElementById('extractBtn');
+  btn.disabled = true; btn.textContent = '⟳ Extracting…';
+  document.getElementById('statusText').textContent = 'Starting…';
+  try {
+    const r = await fetch('/api/extract', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({
+        universe: document.getElementById('universeSelect').value,
+        rsi_period: parseInt(document.getElementById('rsiPeriod').value),
+        min_avg_vol: parseInt(document.getElementById('minVol').value),
+        sector_cap_enabled: document.getElementById('sectorCap').checked,
+      })
+    });
+    const d = await r.json();
+    if (d.status === 'started') {
+      startPolling();
+    } else if (d.status === 'already_running') {
+      document.getElementById('statusText').textContent = 'Already running…';
+      startPolling();
+    }
+  } catch(e) {
+    document.getElementById('statusText').textContent = 'Error: ' + e.message;
+    btn.disabled = false; btn.textContent = '▶ Extract Data';
+  }
+}
+
+function startPolling() {
+  if (_pollInterval) clearInterval(_pollInterval);
+  _pollInterval = setInterval(async () => {
+    try {
+      const r = await fetch('/api/extraction/status');
+      const s = await r.json();
+      const pct = s.total > 0 ? Math.round(s.done / s.total * 100) : 0;
+      document.getElementById('progressFill').style.width = pct + '%';
+      document.getElementById('statusText').textContent =
+        s.running ? `${s.done}/${s.total} (${s.errors} err, ${s.rate_limited} RL)` :
+        `Done: ${s.done}/${s.total}`;
+      if (!s.running && s.done > 0) {
+        clearInterval(_pollInterval);
+        document.getElementById('extractBtn').disabled = false;
+        document.getElementById('extractBtn').textContent = '▶ Extract Data';
+        loadScreener();
+      }
+    } catch(e) {}
+  }, 2000);
+}
+
+async function refreshLive() {
+  await fetch('/api/refresh_live', {method:'POST'});
+  setTimeout(loadScreener, 3000);
+}
+
+// ── Screener load ─────────────────────────────────────────────────────────────
+async function loadScreener() {
+  const sort = document.getElementById('sortSelect').value;
+  const horizon = document.getElementById('horizonSelect').value;
+  document.getElementById('loadingSpinner').style.display = '';
+  try {
+    const r = await fetch(`/api/screener?sort_by=${sort}&horizon=${horizon}`);
+    const d = await r.json();
+    _rows = d.rows || [];
+    renderMarketContext(d);
+    renderSectorPills(d.top_sectors || []);
+    applyFilters();
+  } catch(e) {
+    console.error(e);
+  }
+  document.getElementById('loadingSpinner').style.display = 'none';
+}
+
+function renderMarketContext(d) {
+  const regime = d.regime || 'BULL';
+  const vix = d.vix != null ? d.vix.toFixed(1) : '—';
+  const regimeClr = regime === 'BULL' ? 'bull' : regime === 'BEAR' ? 'bear' : 'neu';
+  const rows = [
+    ['Regime', `<span class="${regimeClr}">${regime}</span>`],
+    ['VIX', vix],
+    ['Mkt OK', d.market_ok ? '<span class="bull">YES</span>' : '<span class="bear">NO</span>'],
+    ['N50>50DMA', d.nifty_above_50dma ? '<span class="bull">YES</span>' : '<span class="bear">NO</span>'],
+    ['VIX↓', d.vix_falling ? '<span class="bull">YES</span>' : '<span class="bear">NO</span>'],
+    ['Stocks', d.total || 0],
+    ['LiveQ', d.live_quotes || 0],
+  ];
+  document.getElementById('mktContent').innerHTML = rows.map(([k,v]) =>
+    `<div class="mkt-row"><span class="mkt-key">${k}</span><span class="mkt-val">${v}</span></div>`
+  ).join('');
+
+  // Sector returns in sidebar
+  if (d.sector_returns && Object.keys(d.sector_returns).length) {
+    const sec = document.getElementById('sectorSection');
+    sec.style.display = '';
+    const sorted = Object.entries(d.sector_returns).sort((a,b) => b[1]-a[1]).slice(0,8);
+    document.getElementById('sectorContent').innerHTML = sorted.map(([k,v]) =>
+      `<div class="mkt-row"><span class="mkt-key">${k}</span><span class="mkt-val ${v>0?'bull':'bear'}">${v>0?'+':''}${v.toFixed(1)}%</span></div>`
+    ).join('');
+  }
+}
+
+function renderSectorPills(topSectors) {
+  const sectors = [...new Set(_rows.map(r => r.Sector).filter(Boolean))].sort();
+  const pills = document.getElementById('sectorPills');
+  pills.innerHTML = `<span class="sector-pill ${!_sectorFilter?'active':''}" onclick="filterSector('')">ALL</span>` +
+    sectors.map(s => `<span class="sector-pill ${_sectorFilter===s?'active':''}" onclick="filterSector('${s}')">${s}</span>`).join('');
+}
+
+function filterSector(s) {
+  _sectorFilter = s;
+  document.querySelectorAll('.sector-pill').forEach(p => {
+    p.classList.toggle('active', p.textContent === (s||'ALL'));
+  });
+  applyFilters();
+}
+
+function applyFilters() {
+  const q = document.getElementById('searchInput').value.toLowerCase();
+  _filteredRows = _rows.filter(r => {
+    const matchQ = !q || (r.Ticker||'').toLowerCase().includes(q) || (r.Sector||'').toLowerCase().includes(q);
+    const matchS = !_sectorFilter || r.Sector === _sectorFilter;
+    return matchQ && matchS;
+  });
+  document.getElementById('visibleCount').textContent = `${_filteredRows.length} stocks`;
+  document.getElementById('rowCount').textContent = `(${_rows.length} total)`;
+  renderTable(_filteredRows);
+}
+
+function sortBy(col) {
+  // Map UI column names to API field names
+  const fieldMap = { TotalScore: 'Score', RS_Score: 'RS' };
+  const apiCol = fieldMap[col] || col;
+  if (_sortCol === apiCol) _sortAsc = !_sortAsc;
+  else { _sortCol = apiCol; _sortAsc = false; }
+  _filteredRows.sort((a,b) => {
+    const av = a[apiCol], bv = b[apiCol];
+    if (av == null) return 1; if (bv == null) return -1;
+    return _sortAsc ? (av > bv ? 1 : -1) : (bv > av ? 1 : -1);
+  });
+  renderTable(_filteredRows);
+}
+
+function fv(v, dec=1) {
+  if (v == null || v === '' || isNaN(parseFloat(v))) return '—';
+  return parseFloat(v).toFixed(dec);
+}
+function clr(v) {
+  if (v == null) return '';
+  return parseFloat(v) > 0 ? 'style="color:var(--green)"' : parseFloat(v) < 0 ? 'style="color:var(--red)"' : '';
+}
+function fmtVol(v) {
+  if (!v) return '—';
+  if (v >= 1e7) return (v/1e7).toFixed(1) + 'Cr';
+  if (v >= 1e5) return (v/1e5).toFixed(1) + 'L';
+  return Math.round(v).toLocaleString();
+}
+
+function renderTable(rows) {
+  if (!rows.length) {
+    document.getElementById('screenerBody').innerHTML =
+      '<tr><td colspan="14" class="empty-state">No stocks match the current filters.</td></tr>';
+    return;
+  }
+  const html = rows.map((r, i) => {
+    // API returns: Score (not TotalScore), RS (not RS_Score), VCP_Detected (not VCP),
+    // Pos52W (not Pos52W_pct), ATR% (not ATR_pct), CLVAccum (not CLV_Accum)
+    const score = r.Score;
+    const scoreClr = score >= 70 ? 'var(--green)' : score >= 40 ? 'var(--amber)' : 'var(--red)';
+    const signals = [
+      r.VCP_Detected ? `<span class="tag tag-vcp">VCP</span>` : '',
+      r.DarvasInBox  ? `<span class="tag tag-bo">BO</span>`  : '',
+      r.OI_Buildup > 0 ? `<span class="tag tag-oi">OI</span>` : '',
+    ].join('');
+    const sigDots = [
+      `<span class="sig ${r.UpVolSkew > 0 ? 'sig-g' : 'sig-n'}" title="UpVolSkew"></span>`,
+      `<span class="sig ${r.BBSqueeze > 0 ? 'sig-g' : 'sig-n'}" title="BBSqueeze"></span>`,
+      `<span class="sig ${r.CLVAccum  > 0 ? 'sig-g' : 'sig-n'}" title="CLV Accum"></span>`,
+    ].join('');
+    // DayChg% — derive from LTP vs EMA9 if not provided directly
+    const dayChgPct = r.DayChg_pct != null ? r.DayChg_pct : null;
+    const pos52wPct = r.Pos52W != null ? (r.Pos52W * 100) : null;  // Pos52W is 0-1
+    const atrPct    = r['ATR%'] != null ? r['ATR%'] : r.ATR_pct;
+    return `<tr>
+      <td class="rank-cell">${r.Rank||i+1}</td>
+      <td class="ticker-cell" onclick="openStock('${r.Ticker}')">${r.Ticker}${signals}</td>
+      <td>₹${fv(r.LTP,2)}</td>
+      <td class="score-cell" style="color:${scoreClr}">${fv(score)}</td>
+      <td>${fv(r.CompositeRank,4)}</td>
+      <td ${clr(r.RS)}>${fv(r.RS)}</td>
+      <td>${r.VCP_Detected ? '<span style="color:var(--green)">✔</span>' : '—'}</td>
+      <td style="color:var(--muted)">${r.Horizon||'—'}</td>
+      <td style="color:var(--dim)">${r.Sector||'—'}</td>
+      <td ${clr(dayChgPct)}>${dayChgPct != null ? (parseFloat(dayChgPct)>0?'+':'') + fv(dayChgPct) + '%' : '—'}</td>
+      <td style="color:var(--muted)">${fmtVol(r.LiveVol)}</td>
+      <td ${clr(pos52wPct)}>${pos52wPct != null ? fv(pos52wPct) + '%' : '—'}</td>
+      <td>${fv(atrPct)}%</td>
+      <td>${sigDots}</td>
+    </tr>`;
+  }).join('');
+  document.getElementById('screenerBody').innerHTML = html;
+}
+
+function openStock(ticker) {
+  // Quick links to other pages with ticker pre-filled
+  const menu = [
+    `<a href="/fundamentals" onclick="sessionStorage.setItem('prefill_sym','${ticker}')">📊 Fundamentals</a>`,
+    `<a href="/options" onclick="sessionStorage.setItem('prefill_sym','${ticker}')">⚙ Options</a>`,
+    `<a href="/ml" onclick="sessionStorage.setItem('prefill_sym','${ticker}')">🤖 ML Predict</a>`,
+  ];
+  // Simple: just open fundamentals with prefill
+  sessionStorage.setItem('prefill_sym', ticker);
+  // For now just navigate to fundamentals — future: popup
+  window.open(`/fundamentals?sym=${ticker}`, '_blank');
+}
+
+// ── Auto-load screener if data exists ─────────────────────────────────────────
+(async function init() {
+  try {
+    const r = await fetch('/api/extraction/status');
+    const s = await r.json();
+    if (s.cached > 0) {
+      loadScreener();
+    }
+    if (s.running) {
+      document.getElementById('extractBtn').disabled = true;
+      document.getElementById('extractBtn').textContent = '⟳ Extracting…';
+      startPolling();
+    }
+  } catch(e) {}
+})();
+</script>
+</body>
+</html>
