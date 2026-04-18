@@ -1,0 +1,373 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MONARCH PRO — ML Predictor</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@300;400;600;700&display=swap" rel="stylesheet">
+<style>
+:root{--amber:#ff8c00;--amber2:#ffb347;--green:#00d084;--red:#ff3b3b;--blue:#1e90ff;--cyan:#00ccff;
+      --purple:#b060ff;--bg:#0a0a0a;--surface:#111;--border:#2a2a2a;--muted:#888;--dim:#555;
+      --mono:'IBM Plex Mono',monospace;}
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0;}
+html,body{background:var(--bg);color:#e8e8e8;font-family:var(--mono);font-size:13px;min-height:100vh;}
+::-webkit-scrollbar{width:6px;height:6px;}::-webkit-scrollbar-track{background:#0a0a0a;}
+::-webkit-scrollbar-thumb{background:#333;}::-webkit-scrollbar-thumb:hover{background:var(--amber);}
+.page{padding:16px 20px;}
+.page-title{color:var(--amber);font-size:1.0rem;font-weight:700;letter-spacing:.18em;text-transform:uppercase;margin-bottom:4px;}
+.page-sub{color:var(--muted);font-size:.62rem;letter-spacing:.08em;margin-bottom:16px;}
+.controls{display:flex;align-items:flex-end;gap:12px;flex-wrap:wrap;
+          background:var(--surface);border:1px solid var(--border);padding:14px 16px;margin-bottom:16px;}
+.ctrl-group{display:flex;flex-direction:column;gap:4px;}
+.ctrl-label{color:var(--muted);font-size:.58rem;letter-spacing:.1em;text-transform:uppercase;}
+.ctrl-input,.ctrl-select{background:#0d0d0d;border:1px solid #333;color:#e8e8e8;font-family:var(--mono);
+  font-size:.72rem;padding:6px 10px;outline:none;}
+.ctrl-input:focus,.ctrl-select:focus{border-color:var(--amber);}
+.btn{background:#140e00;color:var(--amber);border:1px solid var(--amber);font-family:var(--mono);
+     font-size:.68rem;font-weight:700;letter-spacing:.12em;text-transform:uppercase;padding:7px 18px;cursor:pointer;}
+.btn:hover{background:var(--amber);color:#000;}
+.btn:disabled{opacity:.4;cursor:not-allowed;}
+.btn.sm{padding:4px 12px;font-size:.60rem;}
+.btn.danger{border-color:var(--red);color:var(--red);background:transparent;}
+.btn.danger:hover{background:var(--red);color:#000;}
+
+/* Decision card */
+.decision-card{display:flex;gap:16px;flex-wrap:wrap;margin-bottom:20px;}
+.signal-box{flex:1;min-width:200px;background:var(--surface);border:1px solid var(--border);
+            padding:20px;text-align:center;}
+.signal-label{color:var(--muted);font-size:.58rem;text-transform:uppercase;letter-spacing:.1em;margin-bottom:8px;}
+.signal-value{font-size:2.0rem;font-weight:700;}
+.signal-sub{color:var(--muted);font-size:.62rem;margin-top:6px;}
+.buy{color:var(--green)!important;border-top:3px solid var(--green)!important;}
+.sell{color:var(--red)!important;border-top:3px solid var(--red)!important;}
+.neutral-sig{color:var(--amber)!important;border-top:3px solid var(--amber)!important;}
+
+/* Prob gauge */
+.prob-gauge{position:relative;width:100%;height:12px;background:#1a1a1a;border-radius:6px;margin:8px 0;}
+.prob-fill{height:12px;border-radius:6px;transition:width .4s;}
+.prob-label{position:absolute;top:-18px;font-size:.58rem;color:var(--muted);}
+
+/* Metrics */
+.metrics-row{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:16px;}
+.metric-card{background:var(--surface);border:1px solid var(--border);border-left:3px solid var(--amber);
+             padding:10px 14px;flex:1;min-width:120px;}
+.metric-label{color:var(--muted);font-size:.56rem;letter-spacing:.1em;text-transform:uppercase;margin-bottom:4px;}
+.metric-value{color:#e8e8e8;font-size:.95rem;font-weight:700;}
+.metric-sub{color:var(--muted);font-size:.58rem;margin-top:2px;}
+
+/* Feature importance */
+.feat-row{display:flex;align-items:center;gap:8px;padding:5px 0;border-bottom:1px solid #1a1a1a;}
+.feat-name{color:var(--muted);font-size:.62rem;width:110px;flex-shrink:0;}
+.feat-bar-wrap{flex:1;background:#1a1a1a;height:8px;border-radius:4px;}
+.feat-bar{height:8px;border-radius:4px;background:var(--blue);}
+.feat-val{font-size:.60rem;color:#c8c8c8;width:50px;text-align:right;flex-shrink:0;}
+
+/* Fold table */
+.fold-table{width:100%;border-collapse:collapse;font-size:.65rem;margin-top:12px;}
+.fold-table th{color:var(--amber);font-size:.58rem;text-transform:uppercase;letter-spacing:.08em;
+               padding:5px 10px;border-bottom:2px solid var(--amber);background:#0d0d00;text-align:right;}
+.fold-table th:first-child{text-align:left;}
+.fold-table td{padding:4px 10px;border-bottom:1px solid #1a1a1a;text-align:right;color:#c8c8c8;}
+.fold-table td:first-child{text-align:left;color:var(--amber2);}
+.fold-table tr:hover td{background:#140e00;}
+
+/* Batch */
+.batch-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:10px;margin-top:12px;}
+.batch-card{background:var(--surface);border:1px solid var(--border);padding:12px;position:relative;}
+.batch-card.buy-card{border-left:3px solid var(--green);}
+.batch-card.sell-card{border-left:3px solid var(--red);}
+.batch-card.neutral-card{border-left:3px solid var(--amber);}
+.batch-sym{color:var(--amber);font-weight:700;font-size:.78rem;margin-bottom:4px;}
+.batch-dir{font-size:.80rem;font-weight:700;}
+.batch-meta{color:var(--muted);font-size:.58rem;margin-top:4px;}
+
+/* Tabs */
+.tabs{display:flex;border-bottom:2px solid var(--amber);margin-bottom:16px;}
+.tab{background:transparent;border:none;color:var(--muted);font-family:var(--mono);font-size:.60rem;
+     font-weight:600;letter-spacing:.1em;text-transform:uppercase;padding:7px 14px;cursor:pointer;
+     border-right:1px solid var(--border);}
+.tab:hover{background:#140e00;color:var(--amber2);}
+.tab.active{background:#140e00;color:var(--amber);border-bottom:2px solid var(--amber);margin-bottom:-2px;}
+.tab-panel{display:none;}.tab-panel.active{display:block;}
+
+.section-title{color:var(--amber2);font-size:.68rem;font-weight:700;letter-spacing:.12em;text-transform:uppercase;
+               margin-bottom:10px;padding-bottom:4px;border-bottom:1px solid var(--border);}
+.two-col{display:grid;grid-template-columns:1fr 1fr;gap:16px;}
+.spinner{display:inline-block;width:14px;height:14px;border:2px solid #333;border-top-color:var(--amber);
+         border-radius:50%;animation:spin .7s linear infinite;vertical-align:middle;}
+@keyframes spin{to{transform:rotate(360deg)}}
+.loading-row{color:var(--muted);font-size:.68rem;padding:24px;text-align:center;}
+.err-msg{color:var(--red);font-size:.70rem;padding:12px;background:#1a0000;border:1px solid #3a0000;}
+.caveat{color:var(--dim);font-size:.58rem;padding:8px 0;line-height:1.6;}
+</style>
+</head>
+<body>
+<script src="/static/monarch-nav.js"></script>
+<div class="page">
+  <div class="page-title">ML Predictor</div>
+  <div class="page-sub">Stacked ensemble (RF + GBM → Logistic meta) · Walk-forward cross-validation · 16 features</div>
+
+  <!-- Single symbol controls -->
+  <div class="controls">
+    <div class="ctrl-group">
+      <label class="ctrl-label">NSE Symbol</label>
+      <input class="ctrl-input" id="symInput" type="text" placeholder="e.g. RELIANCE" value="RELIANCE"
+             onkeydown="if(event.key==='Enter')runPredict()" style="width:160px;text-transform:uppercase">
+    </div>
+    <div class="ctrl-group">
+      <label class="ctrl-label">Horizon (days)</label>
+      <select class="ctrl-select" id="horizonSelect" style="width:100px">
+        <option value="3">3 days</option>
+        <option value="5" selected>5 days</option>
+        <option value="10">10 days</option>
+        <option value="15">15 days</option>
+        <option value="20">20 days</option>
+      </select>
+    </div>
+    <button class="btn" id="predictBtn" onclick="runPredict()">▶ Run Model</button>
+    <button class="btn danger sm" onclick="clearCache()">✕ Clear Cache</button>
+  </div>
+
+  <!-- Tabs -->
+  <div class="tabs" id="mainTabs">
+    <button class="tab active" onclick="switchTab('single')">Single Stock</button>
+    <button class="tab" onclick="switchTab('batch')">Batch Scan</button>
+    <button class="tab" onclick="switchTab('about')">Model Info</button>
+  </div>
+
+  <!-- Single stock -->
+  <div id="tab-single" class="tab-panel active">
+    <div id="singleContent"><div class="loading-row">Enter a symbol and click Run Model.</div></div>
+  </div>
+
+  <!-- Batch -->
+  <div id="tab-batch" class="tab-panel">
+    <div class="controls" style="margin-bottom:16px">
+      <div class="ctrl-group">
+        <label class="ctrl-label">Symbols (comma separated)</label>
+        <input class="ctrl-input" id="batchInput" type="text"
+               value="RELIANCE,HDFCBANK,INFY,TCS,ICICIBANK,SBIN,AXISBANK,WIPRO,TATAMOTORS,MARUTI"
+               style="width:420px">
+      </div>
+      <div class="ctrl-group">
+        <label class="ctrl-label">Horizon</label>
+        <select class="ctrl-select" id="batchHorizon" style="width:100px">
+          <option value="3">3 days</option>
+          <option value="5" selected>5 days</option>
+          <option value="10">10 days</option>
+        </select>
+      </div>
+      <button class="btn" id="batchBtn" onclick="runBatch()">▶ Scan Batch</button>
+    </div>
+    <div id="batchContent"><div class="loading-row">Enter symbols and click Scan Batch.</div></div>
+  </div>
+
+  <!-- About -->
+  <div id="tab-about" class="tab-panel">
+    <div class="section-title">Model Architecture</div>
+    <div style="font-size:.68rem;line-height:1.9;color:#c8c8c8;max-width:700px">
+      <p><strong style="color:var(--amber)">Stacked Ensemble:</strong> Layer 1 consists of a Random Forest (100 trees, depth 5) and a Gradient Boosting Machine (100 estimators, depth 3). Their probability outputs feed a Calibrated Logistic Regression meta-learner (CalibratedClassifierCV, 3-fold).</p>
+      <br>
+      <p><strong style="color:var(--amber)">Validation:</strong> 4-fold Walk-Forward TimeSeriesSplit — no look-ahead bias. Each fold trains on earlier history and tests on later data, mimicking real trading conditions.</p>
+      <br>
+      <p><strong style="color:var(--amber)">Target:</strong> Forward return > 0.5% over the chosen horizon. Probability output is calibrated so 55% = genuine edge, not just rank.</p>
+      <br>
+      <p><strong style="color:var(--amber)">Data source:</strong> Uses Upstox daily OHLCV from the screener cache when available, otherwise falls back to Yahoo Finance (2 years).</p>
+      <br>
+      <p><strong style="color:var(--amber)">Features (16):</strong> RSI(7), RSI(14), MACD histogram, Bollinger %B, ATR%, volume ratio (5d/20d), EMA distances (9/20/50), 1d/5d/20d returns, 52-week high/low distances, vol continuity (ATR5/ATR20), CLV.</p>
+    </div>
+    <div class="section-title" style="margin-top:20px">Feature Definitions</div>
+    <table style="width:100%;border-collapse:collapse;font-size:.63rem">
+      <thead><tr style="background:#0d0d00">
+        <th style="color:var(--amber);padding:5px 10px;text-align:left;border-bottom:1px solid var(--border)">Feature</th>
+        <th style="color:var(--amber);padding:5px 10px;text-align:left;border-bottom:1px solid var(--border)">Description</th>
+      </tr></thead>
+      <tbody>${[
+        ['rsi7 / rsi14','Wilder RSI with 7 and 14 period — momentum signal'],
+        ['macd_hist','MACD histogram (12/26/9) normalised by price — trend acceleration'],
+        ['bb_pct','Bollinger %B = (close − lower) / (upper − lower) — mean reversion positioning'],
+        ['atr_pct','ATR(14) as % of close — current volatility regime'],
+        ['vol_ratio','5-day average volume / 20-day average — volume surge detection'],
+        ['ema9/20/50_dist','% distance of close from each EMA — trend alignment and extension'],
+        ['ret1d/5d/20d','Raw period returns — momentum at multiple time frames'],
+        ['high52w_dist','% below 52-week high — nearness to resistance'],
+        ['low52w_dist','% above 52-week low — distance from support'],
+        ['vol_cont','ATR(5)/ATR(20) — volatility continuity / coiling signal'],
+        ['clv','Close Location Value = ((C−L)−(H−C))/(H−L) — intrabar pressure'],
+      ].map(([f,d]) => `<tr><td style="color:var(--amber2);padding:4px 10px;border-bottom:1px solid #1a1a1a;white-space:nowrap">${f}</td><td style="color:#888;padding:4px 10px;border-bottom:1px solid #1a1a1a">${d}</td></tr>`).join('')}
+      </tbody>
+    </table>
+    <div class="caveat" style="margin-top:16px">
+      ⚠ This model is for research and educational purposes. Past cross-validation accuracy does not guarantee future performance. Always use proper risk management and position sizing. This is not financial advice.
+    </div>
+  </div>
+</div>
+
+<script>
+let _result = null;
+const sym = () => document.getElementById('symInput').value.trim().toUpperCase();
+const horizon = () => parseInt(document.getElementById('horizonSelect').value);
+
+function switchTab(name) {
+  document.querySelectorAll('.tab').forEach((t, i) => {
+    const names = ['single','batch','about'];
+    t.classList.toggle('active', names[i] === name);
+  });
+  document.querySelectorAll('.tab-panel').forEach(p => {
+    p.classList.toggle('active', p.id === 'tab-' + name);
+  });
+}
+
+async function runPredict() {
+  const s = sym(), h = horizon();
+  const btn = document.getElementById('predictBtn');
+  btn.disabled = true; btn.textContent = '⟳ Training…';
+  document.getElementById('singleContent').innerHTML = '<div class="loading-row"><span class="spinner"></span> Training ensemble model (this may take 20-60s for large datasets)…</div>';
+  try {
+    const r = await fetch(`/api/ml/${s}?horizon=${h}`);
+    if (!r.ok) throw new Error(await r.text());
+    _result = await r.json();
+    renderSingle(_result);
+  } catch(e) {
+    document.getElementById('singleContent').innerHTML = `<div class="err-msg">✘ ${e.message}</div>`;
+  }
+  btn.disabled = false; btn.textContent = '▶ Run Model';
+}
+
+async function clearCache() {
+  const s = sym();
+  await fetch(`/api/ml/${s}/cache`, {method:'DELETE'});
+  document.getElementById('singleContent').innerHTML = '<div class="loading-row" style="color:var(--green)">Cache cleared. Click Run Model to retrain.</div>';
+}
+
+function dirColor(dir) {
+  return dir === 'BUY' ? 'var(--green)' : dir === 'SELL' ? 'var(--red)' : 'var(--amber)';
+}
+function dirCls(dir) {
+  return dir === 'BUY' ? 'buy' : dir === 'SELL' ? 'sell' : 'neutral-sig';
+}
+
+function renderSingle(r) {
+  const pUp = r.prob_up / 100;
+  const dClr = dirColor(r.direction);
+  const confClr = r.confidence === 'HIGH' ? 'var(--green)' : r.confidence === 'MEDIUM' ? 'var(--amber)' : 'var(--red)';
+
+  const html = `
+    <div class="decision-card">
+      <div class="signal-box ${dirCls(r.direction)}" style="border-top-color:${dClr}">
+        <div class="signal-label">Direction</div>
+        <div class="signal-value" style="color:${dClr}">${r.direction}</div>
+        <div class="signal-sub">${r.horizon_days}-day horizon</div>
+      </div>
+      <div class="signal-box" style="flex:2">
+        <div class="signal-label">Probability Up</div>
+        <div style="position:relative;margin-top:8px">
+          <span class="prob-label" style="left:0">0%</span>
+          <span class="prob-label" style="left:calc(50% - 14px)">50%</span>
+          <span class="prob-label" style="right:0">100%</span>
+        </div>
+        <div class="prob-gauge" style="margin-top:22px">
+          <div class="prob-fill" style="width:${r.prob_up}%;background:${dClr}"></div>
+        </div>
+        <div style="font-size:1.3rem;font-weight:700;color:${dClr};margin-top:6px">${r.prob_up.toFixed(1)}%</div>
+        <div class="signal-sub">Confidence: <span style="color:${confClr};font-weight:700">${r.confidence}</span></div>
+      </div>
+      <div class="signal-box">
+        <div class="signal-label">Price Targets</div>
+        <div style="font-size:.68rem;display:flex;flex-direction:column;gap:6px;margin-top:8px;text-align:left">
+          <div><span style="color:var(--muted)">LTP &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;</span> <span style="color:#e8e8e8;font-weight:700">₹${r.ltp?.toFixed(2)||'—'}</span></div>
+          <div><span style="color:var(--muted)">Target &nbsp;</span> <span style="color:var(--green);font-weight:700">₹${r.ml_target?.toFixed(2)||'—'}</span></div>
+          <div><span style="color:var(--muted)">Stop &nbsp;&nbsp;&nbsp;</span> <span style="color:var(--red);font-weight:700">₹${r.ml_stop?.toFixed(2)||'—'}</span></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="metrics-row">
+      <div class="metric-card"><div class="metric-label">CV Accuracy</div><div class="metric-value">${r.cv_accuracy}%</div></div>
+      <div class="metric-card"><div class="metric-label">CV AUC</div><div class="metric-value">${r.cv_auc}%</div></div>
+      <div class="metric-card"><div class="metric-label">CV F1</div><div class="metric-value">${r.cv_f1}%</div></div>
+      <div class="metric-card"><div class="metric-label">Log Loss</div><div class="metric-value">${r.cv_logloss?.toFixed(4)||'—'}</div></div>
+      <div class="metric-card"><div class="metric-label">Trained Bars</div><div class="metric-value">${r.trained_bars}</div></div>
+      <div class="metric-card"><div class="metric-label">Symbol</div><div class="metric-value" style="font-size:.80rem">${r.symbol}</div></div>
+    </div>
+
+    <div class="two-col">
+      <div>
+        <div class="section-title">Feature Importance (RF Base)</div>
+        ${Object.entries(r.feature_importances||{}).sort((a,b)=>b[1]-a[1]).slice(0,8).map(([k,v]) => `
+          <div class="feat-row">
+            <span class="feat-name">${k}</span>
+            <div class="feat-bar-wrap"><div class="feat-bar" style="width:${(v*500).toFixed(0)}%"></div></div>
+            <span class="feat-val">${(v*100).toFixed(2)}%</span>
+          </div>`).join('')}
+      </div>
+      <div>
+        <div class="section-title">Walk-Forward Fold Metrics</div>
+        <table class="fold-table">
+          <thead><tr><th>Fold</th><th>Acc%</th><th>AUC%</th><th>F1%</th><th>Precision</th><th>Recall</th></tr></thead>
+          <tbody>${(r.fold_metrics||[]).map((m,i) => `<tr>
+            <td>Fold ${i+1}</td>
+            <td>${(m.acc*100).toFixed(1)}</td>
+            <td>${(m.auc*100).toFixed(1)}</td>
+            <td>${(m.f1*100).toFixed(1)}</td>
+            <td>${(m.precision*100).toFixed(1)}</td>
+            <td>${(m.recall*100).toFixed(1)}</td>
+          </tr>`).join('')}</tbody>
+        </table>
+        <div style="margin-top:12px;font-size:.60rem;color:var(--dim)">
+          Model: ${r.model||'—'}<br>
+          Validation: ${r.validation||'—'}
+        </div>
+      </div>
+    </div>
+    <div class="caveat">⚠ ML predictions are probabilistic research tools, not trading signals. Verify with your own analysis before trading.</div>`;
+  document.getElementById('singleContent').innerHTML = html;
+}
+
+async function runBatch() {
+  const syms = document.getElementById('batchInput').value;
+  const h    = parseInt(document.getElementById('batchHorizon').value);
+  const btn  = document.getElementById('batchBtn');
+  btn.disabled = true; btn.textContent = '⟳ Scanning…';
+  document.getElementById('batchContent').innerHTML = '<div class="loading-row"><span class="spinner"></span> Training models for all symbols — may take 1-3 minutes…</div>';
+  try {
+    const r = await fetch(`/api/ml/batch/predict?symbols=${encodeURIComponent(syms)}&horizon=${h}`);
+    if (!r.ok) throw new Error(await r.text());
+    const d = await r.json();
+    renderBatch(d.results, h);
+  } catch(e) {
+    document.getElementById('batchContent').innerHTML = `<div class="err-msg">✘ ${e.message}</div>`;
+  }
+  btn.disabled = false; btn.textContent = '▶ Scan Batch';
+}
+
+function renderBatch(results, h) {
+  const sorted = [...results].sort((a,b) => {
+    if (a.error && !b.error) return 1;
+    if (!a.error && b.error) return -1;
+    return (b.prob_up||50) - (a.prob_up||50);
+  });
+  const html = `
+    <div style="font-size:.62rem;color:var(--muted);margin-bottom:12px">
+      ${results.length} symbols · ${h}-day horizon · sorted by probability up
+    </div>
+    <div class="batch-grid">${sorted.map(r => {
+      if (r.error) return `<div class="batch-card"><div class="batch-sym">${r.symbol}</div><div style="color:var(--red);font-size:.60rem">${r.error}</div></div>`;
+      const dClr = dirColor(r.direction);
+      const cls = r.direction === 'BUY' ? 'buy-card' : r.direction === 'SELL' ? 'sell-card' : 'neutral-card';
+      return `<div class="batch-card ${cls}" onclick="document.getElementById('symInput').value='${r.symbol}';switchTab('single');runPredict()" style="cursor:pointer">
+        <div class="batch-sym">${r.symbol}</div>
+        <div class="batch-dir" style="color:${dClr}">${r.direction}</div>
+        <div class="batch-meta">
+          Prob Up: <span style="color:${dClr};font-weight:700">${r.prob_up?.toFixed(1)}%</span><br>
+          CV Acc: ${r.cv_accuracy}% &nbsp;|&nbsp; ${r.confidence}<br>
+          Target: ₹${r.ml_target?.toFixed(0)||'—'} &nbsp; Stop: ₹${r.ml_stop?.toFixed(0)||'—'}
+        </div>
+      </div>`;
+    }).join('')}</div>`;
+  document.getElementById('batchContent').innerHTML = html;
+}
+</script>
+</body>
+</html>

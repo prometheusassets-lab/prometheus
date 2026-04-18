@@ -1,0 +1,522 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MONARCH PRO — Options Intelligence</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@300;400;600;700&display=swap" rel="stylesheet">
+<style>
+:root{--amber:#ff8c00;--amber2:#ffb347;--green:#00d084;--red:#ff3b3b;--blue:#1e90ff;
+      --bg:#0a0a0a;--surface:#111;--surface2:#0d0d0d;--border:#2a2a2a;
+      --muted:#888;--dim:#555;--mono:'IBM Plex Mono',monospace;}
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0;}
+html,body{background:var(--bg);color:#e8e8e8;font-family:var(--mono);font-size:13px;min-height:100vh;}
+::-webkit-scrollbar{width:6px;height:6px;}
+::-webkit-scrollbar-track{background:#0a0a0a;}
+::-webkit-scrollbar-thumb{background:#333;border-radius:3px;}
+::-webkit-scrollbar-thumb:hover{background:var(--amber);}
+
+/* Layout */
+.page{padding:16px 20px;}
+.page-header{display:flex;align-items:center;gap:12px;margin-bottom:16px;flex-wrap:wrap;}
+.page-title{color:var(--amber);font-size:1.0rem;font-weight:700;letter-spacing:.18em;text-transform:uppercase;}
+.page-sub{color:var(--muted);font-size:.62rem;letter-spacing:.08em;}
+
+/* Controls */
+.controls{display:flex;align-items:flex-end;gap:12px;flex-wrap:wrap;
+          background:var(--surface);border:1px solid var(--border);padding:14px 16px;margin-bottom:16px;}
+.ctrl-group{display:flex;flex-direction:column;gap:4px;}
+.ctrl-label{color:var(--muted);font-size:.58rem;letter-spacing:.1em;text-transform:uppercase;}
+.ctrl-select,.ctrl-input{background:#0d0d0d;border:1px solid #333;color:#e8e8e8;
+                          font-family:var(--mono);font-size:.72rem;padding:6px 10px;outline:none;
+                          min-width:140px;}
+.ctrl-select:focus,.ctrl-input:focus{border-color:var(--amber);}
+.btn{background:#140e00;color:var(--amber);border:1px solid var(--amber);
+     font-family:var(--mono);font-size:.68rem;font-weight:700;letter-spacing:.12em;
+     text-transform:uppercase;padding:7px 18px;cursor:pointer;white-space:nowrap;}
+.btn:hover{background:var(--amber);color:#000;}
+.btn:disabled{opacity:.4;cursor:not-allowed;}
+.btn.secondary{background:transparent;border-color:#333;color:var(--muted);}
+.btn.secondary:hover{border-color:var(--amber2);color:var(--amber2);background:transparent;}
+
+/* Metrics row */
+.metrics-row{display:flex;gap:12px;flex-wrap:wrap;margin-bottom:16px;}
+.metric-card{background:var(--surface);border:1px solid var(--border);
+             border-left:3px solid var(--amber);padding:10px 14px;flex:1;min-width:130px;}
+.metric-label{color:var(--muted);font-size:.56rem;letter-spacing:.1em;text-transform:uppercase;margin-bottom:4px;}
+.metric-value{color:#e8e8e8;font-size:1.0rem;font-weight:700;}
+.metric-sub{color:var(--muted);font-size:.60rem;margin-top:2px;}
+.metric-card.bull .metric-value{color:var(--green);}
+.metric-card.bear .metric-value{color:var(--red);}
+.metric-card.neutral .metric-value{color:var(--amber);}
+
+/* Tabs */
+.tabs{display:flex;border-bottom:2px solid var(--amber);margin-bottom:16px;}
+.tab{background:transparent;border:none;color:var(--muted);font-family:var(--mono);
+     font-size:.62rem;font-weight:600;letter-spacing:.1em;text-transform:uppercase;
+     padding:8px 18px;cursor:pointer;border-right:1px solid var(--border);}
+.tab:hover{background:#140e00;color:var(--amber2);}
+.tab.active{background:#140e00;color:var(--amber);border-bottom:2px solid var(--amber);margin-bottom:-2px;}
+.tab-panel{display:none;}
+.tab-panel.active{display:block;}
+
+/* Tables */
+.table-wrap{overflow-x:auto;}
+table{width:100%;border-collapse:collapse;font-size:.68rem;}
+thead tr{background:#0d0d00;}
+th{color:var(--amber);font-size:.58rem;font-weight:700;letter-spacing:.1em;text-transform:uppercase;
+   padding:6px 10px;text-align:right;border-bottom:2px solid var(--amber);white-space:nowrap;}
+th:first-child{text-align:left;}
+td{padding:5px 10px;text-align:right;border-bottom:1px solid #1a1a1a;white-space:nowrap;color:#c8c8c8;}
+td:first-child{text-align:left;color:#e8e8e8;}
+tr:hover td{background:#140e00;color:var(--amber2);}
+tr.atm td{background:#1a1000;color:var(--amber);}
+.itm{color:#e8e8e8;}
+.otm{color:var(--dim);}
+
+/* Bias panel */
+.bias-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:16px;}
+.factor-row{display:flex;align-items:center;gap:8px;padding:5px 0;border-bottom:1px solid #1a1a1a;}
+.factor-name{color:var(--muted);font-size:.62rem;letter-spacing:.08em;width:110px;flex-shrink:0;}
+.factor-bar-wrap{flex:1;background:#1a1a1a;height:6px;border-radius:3px;}
+.factor-bar{height:6px;border-radius:3px;}
+.factor-val{font-size:.62rem;width:40px;text-align:right;flex-shrink:0;}
+.factor-bar.pos{background:var(--green);}
+.factor-bar.neg{background:var(--red);}
+.factor-bar.neu{background:var(--amber);}
+
+/* Strategy cards */
+.strat-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:12px;}
+.strat-card{background:var(--surface);border:1px solid var(--border);padding:14px 16px;}
+.strat-card:first-child{border-top:2px solid var(--amber);}
+.strat-name{color:var(--amber);font-size:.78rem;font-weight:700;margin-bottom:6px;}
+.strat-score-bar{background:#1a1a1a;height:4px;margin-bottom:8px;}
+.strat-score-fill{height:4px;background:var(--amber);}
+.strat-meta{color:var(--muted);font-size:.60rem;line-height:1.8;}
+.strat-meta span{color:#c8c8c8;}
+.strat-rationale{color:var(--dim);font-size:.58rem;margin-top:6px;border-top:1px solid #1a1a1a;padding-top:6px;}
+
+/* OI chart bars */
+.oi-row{display:flex;align-items:center;gap:8px;margin-bottom:3px;}
+.oi-strike{width:70px;text-align:right;color:var(--muted);font-size:.62rem;}
+.oi-bar-ce{height:14px;background:#00d08444;border-right:2px solid var(--green);}
+.oi-bar-pe{height:14px;background:#ff3b3b44;border-left:2px solid var(--red);}
+.oi-val{width:64px;font-size:.58rem;color:var(--muted);}
+.oi-wrap{display:flex;align-items:center;gap:0;width:100%;}
+
+/* Spinner */
+.spinner{display:inline-block;width:14px;height:14px;border:2px solid #333;
+         border-top-color:var(--amber);border-radius:50%;animation:spin .7s linear infinite;vertical-align:middle;}
+@keyframes spin{to{transform:rotate(360deg)}}
+.loading-row{color:var(--muted);font-size:.68rem;padding:20px;text-align:center;}
+.err-msg{color:var(--red);font-size:.70rem;padding:12px;background:#1a0000;border:1px solid #3a0000;}
+.section-title{color:var(--amber2);font-size:.68rem;font-weight:700;letter-spacing:.12em;
+               text-transform:uppercase;margin-bottom:10px;padding-bottom:4px;
+               border-bottom:1px solid var(--border);}
+</style>
+</head>
+<body>
+<script src="/static/monarch-nav.js"></script>
+
+<div class="page">
+  <div class="page-header">
+    <div>
+      <div class="page-title">Options Intelligence</div>
+      <div class="page-sub">Live chain · Greeks · OI analysis · Strategy recommendations</div>
+    </div>
+  </div>
+
+  <!-- Controls -->
+  <div class="controls">
+    <div class="ctrl-group">
+      <label class="ctrl-label">Underlying</label>
+      <select class="ctrl-select" id="symSelect">
+        <option value="NIFTY">NIFTY</option>
+        <option value="BANKNIFTY">BANKNIFTY</option>
+        <option value="FINNIFTY">FINNIFTY</option>
+        <option value="MIDCPNIFTY">MIDCPNIFTY</option>
+        <option value="RELIANCE">RELIANCE</option>
+        <option value="HDFCBANK">HDFCBANK</option>
+        <option value="ICICIBANK">ICICIBANK</option>
+        <option value="TCS">TCS</option>
+        <option value="INFY">INFY</option>
+        <option value="SBIN">SBIN</option>
+        <option value="AXISBANK">AXISBANK</option>
+        <option value="BAJFINANCE">BAJFINANCE</option>
+        <option value="WIPRO">WIPRO</option>
+        <option value="TATAMOTORS">TATAMOTORS</option>
+        <option value="MARUTI">MARUTI</option>
+      </select>
+    </div>
+    <div class="ctrl-group">
+      <label class="ctrl-label">Expiry</label>
+      <select class="ctrl-select" id="expirySelect"><option value="">— Load expiries —</option></select>
+    </div>
+    <div class="ctrl-group">
+      <label class="ctrl-label">Risk-Free Rate %</label>
+      <input class="ctrl-input" id="rfrInput" type="number" value="6.5" step="0.1" style="width:90px;">
+    </div>
+    <button class="btn" id="loadExpiriesBtn" onclick="loadExpiries()">Load Expiries</button>
+    <button class="btn" id="analyzeBtn" onclick="loadAnalysis()" disabled>▶ Analyse</button>
+  </div>
+
+  <!-- Metrics -->
+  <div class="metrics-row" id="metricsRow" style="display:none">
+    <div class="metric-card" id="mc-spot"><div class="metric-label">Spot</div><div class="metric-value" id="mv-spot">—</div></div>
+    <div class="metric-card" id="mc-atm"><div class="metric-label">ATM IV</div><div class="metric-value" id="mv-atm">—</div><div class="metric-sub" id="ms-atm">—</div></div>
+    <div class="metric-card" id="mc-move"><div class="metric-label">Impl Move ±</div><div class="metric-value" id="mv-move">—</div><div class="metric-sub" id="ms-dte">—</div></div>
+    <div class="metric-card" id="mc-pcr"><div class="metric-label">PCR (OI)</div><div class="metric-value" id="mv-pcr">—</div><div class="metric-sub" id="ms-pcr">—</div></div>
+    <div class="metric-card" id="mc-mp"><div class="metric-label">Max Pain</div><div class="metric-value" id="mv-mp">—</div><div class="metric-sub" id="ms-mp">—</div></div>
+    <div class="metric-card" id="mc-bias"><div class="metric-label">Directional Bias</div><div class="metric-value" id="mv-bias">—</div><div class="metric-sub" id="ms-bias">—</div></div>
+  </div>
+
+  <!-- Tabs -->
+  <div class="tabs" id="mainTabs" style="display:none">
+    <button class="tab active" onclick="switchTab('chain')">Chain</button>
+    <button class="tab" onclick="switchTab('oi')">OI Analysis</button>
+    <button class="tab" onclick="switchTab('bias')">Directional Bias</button>
+    <button class="tab" onclick="switchTab('strategy')">Strategies</button>
+    <button class="tab" onclick="switchTab('greeks')">Greeks</button>
+  </div>
+
+  <div id="tab-chain" class="tab-panel active">
+    <div id="chainContainer"><div class="loading-row">Load an expiry and click Analyse to begin.</div></div>
+  </div>
+  <div id="tab-oi" class="tab-panel">
+    <div id="oiContainer"><div class="loading-row">—</div></div>
+  </div>
+  <div id="tab-bias" class="tab-panel">
+    <div id="biasContainer"><div class="loading-row">—</div></div>
+  </div>
+  <div id="tab-strategy" class="tab-panel">
+    <div id="stratContainer"><div class="loading-row">—</div></div>
+  </div>
+  <div id="tab-greeks" class="tab-panel">
+    <div id="greeksContainer"><div class="loading-row">—</div></div>
+  </div>
+</div>
+
+<script>
+let _data = null;
+const sym = () => document.getElementById('symSelect').value;
+const expiry = () => document.getElementById('expirySelect').value;
+const rfr = () => parseFloat(document.getElementById('rfrInput').value) || 6.5;
+
+function switchTab(name) {
+  document.querySelectorAll('.tab').forEach((t, i) => {
+    const names = ['chain','oi','bias','strategy','greeks'];
+    t.classList.toggle('active', names[i] === name);
+  });
+  document.querySelectorAll('.tab-panel').forEach(p => {
+    p.classList.toggle('active', p.id === 'tab-' + name);
+  });
+}
+
+async function loadExpiries() {
+  const btn = document.getElementById('loadExpiriesBtn');
+  btn.disabled = true; btn.textContent = '⟳ Loading…';
+  const sel = document.getElementById('expirySelect');
+  sel.innerHTML = '<option>Loading…</option>';
+  try {
+    const r = await fetch(`/api/options/expiries/${sym()}`);
+    const text = await r.text();
+    if (!r.ok) {
+      let detail = text;
+      try { detail = JSON.parse(text).detail || text; } catch(e) {}
+      throw new Error(`HTTP ${r.status}: ${detail}`);
+    }
+    const d = JSON.parse(text);
+    if (!d.expiries || !d.expiries.length) throw new Error('No expiries returned — market may be closed or token expired');
+    sel.innerHTML = d.expiries.map(e => `<option value="${e}">${e}</option>`).join('');
+    document.getElementById('analyzeBtn').disabled = false;
+    // Auto-analyse if we came here with a prefilled symbol
+    if (sessionStorage.getItem('auto_analyse')) {
+      sessionStorage.removeItem('auto_analyse');
+      setTimeout(loadAnalysis, 200);
+    }
+  } catch(e) {
+    sel.innerHTML = '<option value="">— failed —</option>';
+    showErr('chainContainer', `Failed to fetch expiries for <b>${sym()}</b>: ${e.message}<br><small>Make sure you are logged in (<a href="/login" style="color:var(--amber)">Auth page</a>) and the Upstox token is valid.</small>`);
+  }
+  btn.disabled = false; btn.textContent = 'Load Expiries';
+}
+
+async function loadAnalysis() {
+  const btn = document.getElementById('analyzeBtn');
+  btn.disabled = true; btn.textContent = '⟳ Analysing…';
+  ['chainContainer','oiContainer','biasContainer','stratContainer','greeksContainer']
+    .forEach(id => document.getElementById(id).innerHTML = '<div class="loading-row"><span class="spinner"></span> Loading…</div>');
+  try {
+    const url = `/api/options/analysis/${sym()}?expiry=${expiry()}&rfr=${rfr()}`;
+    const r = await fetch(url);
+    if (!r.ok) throw new Error(await r.text());
+    _data = await r.json();
+    renderAll(_data);
+    document.getElementById('metricsRow').style.display = 'flex';
+    document.getElementById('mainTabs').style.display = 'flex';
+  } catch(e) {
+    showErr('chainContainer', 'Analysis failed: ' + e.message);
+  }
+  btn.disabled = false; btn.textContent = '▶ Analyse';
+}
+
+function showErr(id, msg) {
+  document.getElementById(id).innerHTML = `<div class="err-msg">✘ ${msg}</div>`;
+}
+
+function fmtN(v, dec=0) {
+  if (v == null || isNaN(v)) return '—';
+  if (Math.abs(v) >= 1e7) return (v/1e7).toFixed(1) + 'Cr';
+  if (Math.abs(v) >= 1e5) return (v/1e5).toFixed(1) + 'L';
+  return Number(v).toFixed(dec);
+}
+function fmtPct(v, dec=2) { return v == null ? '—' : v.toFixed(dec) + '%'; }
+function clr(v, inv=false) {
+  if (v == null) return '';
+  const pos = inv ? v < 0 : v > 0;
+  return pos ? 'color:var(--green)' : (inv ? v > 0 : v < 0) ? 'color:var(--red)' : '';
+}
+
+function renderAll(data) {
+  const ch = data.chain;
+  const bias = data.bias;
+  const spot = data.spot;
+
+  // Metrics
+  document.getElementById('mv-spot').textContent = '₹' + spot.toFixed(2);
+  document.getElementById('mv-atm').textContent = fmtPct(ch.atm_iv_pct);
+  document.getElementById('ms-atm').textContent = 'HV20: ' + fmtPct(bias.hv20 || null);
+  document.getElementById('mv-move').textContent = '±' + fmtPct(ch.impl_move_pct);
+  document.getElementById('ms-dte').textContent = ch.dte + ' DTE';
+  const pcr = ch.pcr_oi;
+  document.getElementById('mv-pcr').textContent = (pcr||0).toFixed(3);
+  document.getElementById('ms-pcr').textContent = pcr > 1.2 ? '↑ Bullish' : pcr < 0.8 ? '↓ Bearish' : '→ Neutral';
+  document.getElementById('ms-pcr').style.color = pcr > 1.2 ? 'var(--green)' : pcr < 0.8 ? 'var(--red)' : 'var(--muted)';
+  document.getElementById('mv-mp').textContent = '₹' + ch.max_pain.toFixed(0);
+  document.getElementById('ms-mp').textContent = 'Δ ' + (ch.mp_dist_pct > 0 ? '+' : '') + ch.mp_dist_pct.toFixed(2) + '%';
+  const bc = document.getElementById('mc-bias');
+  document.getElementById('mv-bias').textContent = bias.bias;
+  document.getElementById('ms-bias').textContent = 'Prob Up: ' + (bias.prob_up * 100).toFixed(1) + '%';
+  bc.className = 'metric-card ' + (bias.bias === 'BULLISH' ? 'bull' : bias.bias === 'BEARISH' ? 'bear' : 'neutral');
+
+  renderChain(ch, spot);
+  renderOI(ch);
+  renderBias(bias);
+  renderStrategies(data.strategies);
+  renderGreeks(ch, spot, data.lot_size);
+}
+
+function renderChain(ch, spot) {
+  const rows = ch.chain || [];
+  if (!rows.length) { showErr('chainContainer', 'No chain data'); return; }
+  // Show 8 strikes each side of ATM
+  const sorted = [...rows].sort((a,b) => a.strike - b.strike);
+  const atm = sorted.reduce((prev, cur) => Math.abs(cur.strike - spot) < Math.abs(prev.strike - spot) ? cur : prev);
+  const atmIdx = sorted.indexOf(atm);
+  const visible = sorted.slice(Math.max(0, atmIdx - 8), atmIdx + 9);
+
+  const html = `<div class="table-wrap"><table>
+    <thead><tr>
+      <th style="text-align:left">CE OI</th><th>CE Vol</th><th>CE IV%</th>
+      <th>CE Δ</th><th>CE Bid</th><th>CE LTP</th><th>CE Ask</th>
+      <th style="text-align:center;color:#e8e8e8">STRIKE</th>
+      <th>PE Bid</th><th>PE LTP</th><th>PE Ask</th>
+      <th>PE Δ</th><th>PE IV%</th><th>PE Vol</th><th>PE OI</th>
+    </tr></thead>
+    <tbody>${visible.map(r => {
+      const isAtm = r.strike === atm.strike;
+      const cls = isAtm ? 'atm' : '';
+      return `<tr class="${cls}">
+        <td style="text-align:left;${r.itm_ce?'color:var(--green)':''}">${fmtN(r.ce_oi)}</td>
+        <td>${fmtN(r.ce_vol)}</td>
+        <td>${fmtPct(r.ce_iv)}</td>
+        <td style="${clr(r.ce_delta)}">${r.ce_delta?.toFixed(3)||'—'}</td>
+        <td>${fmtN(r.ce_bid,2)}</td>
+        <td style="font-weight:700">${fmtN(r.ce_ltp,2)}</td>
+        <td>${fmtN(r.ce_ask,2)}</td>
+        <td style="text-align:center;font-weight:700;color:${isAtm?'var(--amber)':'#e8e8e8'}">${r.strike}</td>
+        <td>${fmtN(r.pe_bid,2)}</td>
+        <td style="font-weight:700">${fmtN(r.pe_ltp,2)}</td>
+        <td>${fmtN(r.pe_ask,2)}</td>
+        <td style="${clr(r.pe_delta,true)}">${r.pe_delta?.toFixed(3)||'—'}</td>
+        <td>${fmtPct(r.pe_iv)}</td>
+        <td>${fmtN(r.pe_vol)}</td>
+        <td style="${r.itm_pe?'color:var(--red)':''}">${fmtN(r.pe_oi)}</td>
+      </tr>`;
+    }).join('')}</tbody></table></div>
+    <div style="color:var(--muted);font-size:.58rem;padding:8px 0">
+      ▲ = ITM &nbsp;|&nbsp; ATM Strike highlighted &nbsp;|&nbsp; Showing ±8 strikes around ATM
+    </div>`;
+  document.getElementById('chainContainer').innerHTML = html;
+}
+
+function renderOI(ch) {
+  const rows = (ch.chain || []).sort((a,b) => a.strike - b.strike);
+  const maxOI = Math.max(...rows.map(r => Math.max(r.ce_oi || 0, r.pe_oi || 0)), 1);
+  const maxW = 220;
+  const html = `
+    <div class="section-title">Open Interest Distribution</div>
+    <div style="display:flex;gap:32px;flex-wrap:wrap;">
+      <div style="flex:1;min-width:300px;">
+        <div style="display:flex;gap:16px;margin-bottom:8px;font-size:.60rem;color:var(--muted)">
+          <span style="color:var(--green)">■ CE OI</span>
+          <span style="color:var(--red)">■ PE OI</span>
+        </div>
+        ${rows.map(r => {
+          const ceW = Math.round((r.ce_oi||0)/maxOI*maxW);
+          const peW = Math.round((r.pe_oi||0)/maxOI*maxW);
+          return `<div class="oi-row">
+            <div class="oi-strike">${r.strike}</div>
+            <div class="oi-wrap">
+              <div style="flex:1;display:flex;justify-content:flex-end;">
+                <div class="oi-bar-ce" style="width:${ceW}px"></div>
+              </div>
+              <div style="width:4px;background:var(--border);height:14px;flex-shrink:0"></div>
+              <div style="flex:1;display:flex;justify-content:flex-start;">
+                <div class="oi-bar-pe" style="width:${peW}px"></div>
+              </div>
+            </div>
+          </div>`;
+        }).join('')}
+      </div>
+      <div style="min-width:200px;">
+        <div class="section-title">Summary</div>
+        <div style="display:flex;flex-direction:column;gap:8px;font-size:.68rem;">
+          <div class="factor-row"><span class="factor-name">Total CE OI</span><span style="color:var(--green)">${fmtN(ch.total_ce_oi)}</span></div>
+          <div class="factor-row"><span class="factor-name">Total PE OI</span><span style="color:var(--red)">${fmtN(ch.total_pe_oi)}</span></div>
+          <div class="factor-row"><span class="factor-name">PCR (OI)</span><span>${(ch.pcr_oi||0).toFixed(3)}</span></div>
+          <div class="factor-row"><span class="factor-name">PCR (Vol)</span><span>${(ch.pcr_vol||0).toFixed(3)}</span></div>
+          <div class="factor-row"><span class="factor-name">OI Skew</span><span style="${clr(-(ch.oi_skew||0))}">${(ch.oi_skew||0).toFixed(3)}</span></div>
+          <div class="factor-row"><span class="factor-name">Max Pain</span><span>₹${ch.max_pain?.toFixed(0)||'—'}</span></div>
+          <div class="factor-row"><span class="factor-name">Max Pain Δ</span><span style="${clr(ch.mp_dist_pct||0)}">${((ch.mp_dist_pct||0) > 0 ? '+' : '') + (ch.mp_dist_pct||0).toFixed(2) + '%'}</span></div>
+        </div>
+      </div>
+    </div>`;
+  document.getElementById('oiContainer').innerHTML = html;
+}
+
+function renderBias(bias) {
+  const factors = bias.factors || {};
+  const entries = Object.entries(factors);
+  const probUp = (bias.prob_up || 0.5) * 100;
+  const biasClr = bias.bias === 'BULLISH' ? 'var(--green)' : bias.bias === 'BEARISH' ? 'var(--red)' : 'var(--amber)';
+  const html = `
+    <div class="bias-grid">
+      <div>
+        <div class="section-title">7-Factor Directional Model</div>
+        ${entries.map(([k, v]) => {
+          const pct = Math.abs(v) * 100;
+          const cls = v > 0.05 ? 'pos' : v < -0.05 ? 'neg' : 'neu';
+          return `<div class="factor-row">
+            <span class="factor-name">${k}</span>
+            <div class="factor-bar-wrap"><div class="factor-bar ${cls}" style="width:${pct.toFixed(0)}%"></div></div>
+            <span class="factor-val" style="${v>0.05?'color:var(--green)':v<-0.05?'color:var(--red)':'color:var(--muted)'}">${v >= 0 ? '+' : ''}${v.toFixed(2)}</span>
+          </div>`;
+        }).join('')}
+      </div>
+      <div>
+        <div class="section-title">Signal Output</div>
+        <div style="display:flex;flex-direction:column;gap:10px;">
+          <div style="background:var(--surface);border:1px solid var(--border);border-left:3px solid ${biasClr};padding:14px 16px;">
+            <div style="color:var(--muted);font-size:.58rem;letter-spacing:.1em;text-transform:uppercase">Directional Bias</div>
+            <div style="font-size:1.4rem;font-weight:700;color:${biasClr};margin:4px 0">${bias.bias||'—'}</div>
+            <div style="font-size:.62rem;color:var(--muted)">Raw score: ${(bias.score||0) >= 0 ? '+' : ''}${(bias.score||0).toFixed(3)}</div>
+          </div>
+          <div style="background:var(--surface);border:1px solid var(--border);padding:14px 16px;">
+            <div style="color:var(--muted);font-size:.58rem;text-transform:uppercase;letter-spacing:.1em;margin-bottom:8px">Probability Up</div>
+            <div style="background:#1a1a1a;height:8px;border-radius:4px;margin-bottom:6px;">
+              <div style="height:8px;border-radius:4px;background:${biasClr};width:${probUp.toFixed(1)}%"></div>
+            </div>
+            <div style="font-size:.68rem;color:#e8e8e8">${probUp.toFixed(1)}%</div>
+          </div>
+          <div style="font-size:.62rem;color:var(--muted);display:flex;flex-direction:column;gap:6px;">
+            <div class="factor-row"><span class="factor-name">RSI(14)</span><span>${bias.rsi?.toFixed(1)||'—'}</span></div>
+            <div class="factor-row"><span class="factor-name">ADX</span><span>${bias.adx_val?.toFixed(1)||'—'}</span></div>
+            <div class="factor-row"><span class="factor-name">52W Position</span><span>${((bias.pos52w||0)*100).toFixed(1)}%</span></div>
+            <div class="factor-row"><span class="factor-name">HV20</span><span>${fmtPct(bias.hv20||null)}</span></div>
+            <div class="factor-row"><span class="factor-name">IV/HV Ratio</span><span style="${(bias.iv_hv_ratio||1)>1.2?'color:var(--red)':(bias.iv_hv_ratio||1)<0.85?'color:var(--green)':''}">${(bias.iv_hv_ratio||0).toFixed(3)}x</span></div>
+          </div>
+        </div>
+      </div>
+    </div>`;
+  document.getElementById('biasContainer').innerHTML = html;
+}
+
+function renderStrategies(strats) {
+  if (!strats || !strats.length) { document.getElementById('stratContainer').innerHTML = '<div class="loading-row">No strategies computed.</div>'; return; }
+  const html = `
+    <div class="section-title">EV-Ranked Strategy Recommendations</div>
+    <div class="strat-grid">${strats.map((s, i) => `
+      <div class="strat-card">
+        <div style="color:var(--muted);font-size:.58rem;margin-bottom:2px">#${i+1} &nbsp; ${s.iv_env}</div>
+        <div class="strat-name">${s.strategy}</div>
+        <div class="strat-score-bar"><div class="strat-score-fill" style="width:${s.score}%"></div></div>
+        <div class="strat-meta">
+          Score &nbsp;<span>${s.score}/100</span> &nbsp;|&nbsp;
+          POP &nbsp;<span>${((s.pop||0)*100).toFixed(1)}%</span> &nbsp;|&nbsp;
+          DTE Fit &nbsp;<span>${(s.dte_fit||1).toFixed(2)}</span>
+        </div>
+        <div class="strat-rationale">${s.rationale}</div>
+      </div>`).join('')}
+    </div>`;
+  document.getElementById('stratContainer').innerHTML = html;
+}
+
+function renderGreeks(ch, spot, lot) {
+  const rows = (ch.chain || []).sort((a,b) => a.strike - b.strike);
+  const atm = rows.reduce((p,c) => Math.abs(c.strike-spot) < Math.abs(p.strike-spot) ? c : p, rows[0] || {});
+  const visible = rows.filter(r => Math.abs(r.strike - spot) / spot < 0.04).slice(0, 12);
+  const html = `
+    <div class="section-title">Greeks Dashboard (Lot Size: ${lot})</div>
+    <div class="table-wrap"><table>
+      <thead><tr>
+        <th style="text-align:left">Strike</th>
+        <th>CE IV%</th><th>CE Δ</th><th>CE Γ</th><th>CE Θ</th><th>CE Vega</th>
+        <th style="color:#888">|</th>
+        <th>PE IV%</th><th>PE Δ</th><th>PE Γ</th><th>PE Θ</th><th>PE Vega</th>
+      </tr></thead>
+      <tbody>${visible.map(r => `<tr class="${r.strike===atm.strike?'atm':''}">
+        <td style="font-weight:700">${r.strike}</td>
+        <td>${fmtPct(r.ce_iv)}</td><td style="${clr(r.ce_delta)}">${r.ce_delta?.toFixed(3)||'—'}</td>
+        <td>${r.ce_gamma?.toFixed(5)||'—'}</td><td style="color:var(--red)">${r.ce_theta?.toFixed(3)||'—'}</td><td>${r.ce_vega?.toFixed(3)||'—'}</td>
+        <td style="color:var(--border)">|</td>
+        <td>${fmtPct(r.pe_iv)}</td><td style="${clr(r.pe_delta,true)}">${r.pe_delta?.toFixed(3)||'—'}</td>
+        <td>${r.pe_gamma?.toFixed(5)||'—'}</td><td style="color:var(--red)">${r.pe_theta?.toFixed(3)||'—'}</td><td>${r.pe_vega?.toFixed(3)||'—'}</td>
+      </tr>`).join('')}</tbody>
+    </table></div>
+    <div style="color:var(--muted);font-size:.58rem;padding:8px 0">
+      Showing strikes within ±4% of spot. ATM highlighted. Greeks computed via Black-Scholes.
+    </div>`;
+  document.getElementById('greeksContainer').innerHTML = html;
+}
+
+// ── Auto-init: prefill symbol from screener click or URL param ──────────────
+(function init() {
+  // Check URL param first (?sym=RELIANCE)
+  const urlSym = new URLSearchParams(location.search).get('sym');
+  const ssSym  = sessionStorage.getItem('prefill_sym');
+  const target = (urlSym || ssSym || '').toUpperCase();
+  if (target) {
+    sessionStorage.removeItem('prefill_sym');
+    const sel = document.getElementById('symSelect');
+    // Try to find exact match
+    let found = false;
+    for (const opt of sel.options) {
+      if (opt.value === target) { sel.value = target; found = true; break; }
+    }
+    // If not in list, add it
+    if (!found) {
+      const opt = document.createElement('option');
+      opt.value = target; opt.textContent = target;
+      sel.appendChild(opt);
+      sel.value = target;
+    }
+    sessionStorage.setItem('auto_analyse', '1');
+    // Auto-load expiries
+    setTimeout(loadExpiries, 300);
+  }
+})();
+</script>
+</body>
+</html>

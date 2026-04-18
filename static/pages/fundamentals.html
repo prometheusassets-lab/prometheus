@@ -1,0 +1,485 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MONARCH PRO — Fundamental Research</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@300;400;600;700&display=swap" rel="stylesheet">
+<style>
+:root{--amber:#ff8c00;--amber2:#ffb347;--green:#00d084;--red:#ff3b3b;--blue:#1e90ff;--cyan:#00ccff;
+      --bg:#0a0a0a;--surface:#111;--border:#2a2a2a;--muted:#888;--dim:#555;
+      --mono:'IBM Plex Mono',monospace;}
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0;}
+html,body{background:var(--bg);color:#e8e8e8;font-family:var(--mono);font-size:13px;min-height:100vh;}
+::-webkit-scrollbar{width:6px;height:6px;}::-webkit-scrollbar-track{background:#0a0a0a;}
+::-webkit-scrollbar-thumb{background:#333;}::-webkit-scrollbar-thumb:hover{background:var(--amber);}
+.page{padding:16px 20px;}
+.page-title{color:var(--amber);font-size:1.0rem;font-weight:700;letter-spacing:.18em;text-transform:uppercase;margin-bottom:4px;}
+.page-sub{color:var(--muted);font-size:.62rem;letter-spacing:.08em;margin-bottom:16px;}
+.controls{display:flex;align-items:flex-end;gap:12px;flex-wrap:wrap;
+          background:var(--surface);border:1px solid var(--border);padding:14px 16px;margin-bottom:16px;}
+.ctrl-group{display:flex;flex-direction:column;gap:4px;}
+.ctrl-label{color:var(--muted);font-size:.58rem;letter-spacing:.1em;text-transform:uppercase;}
+.ctrl-input,.ctrl-select{background:#0d0d0d;border:1px solid #333;color:#e8e8e8;font-family:var(--mono);
+  font-size:.72rem;padding:6px 10px;outline:none;min-width:160px;}
+.ctrl-input:focus,.ctrl-select:focus{border-color:var(--amber);}
+.btn{background:#140e00;color:var(--amber);border:1px solid var(--amber);font-family:var(--mono);
+     font-size:.68rem;font-weight:700;letter-spacing:.12em;text-transform:uppercase;padding:7px 18px;cursor:pointer;}
+.btn:hover{background:var(--amber);color:#000;}
+.btn:disabled{opacity:.4;cursor:not-allowed;}
+.btn.sm{padding:4px 10px;font-size:.60rem;}
+
+/* Metrics */
+.metrics-row{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:16px;}
+.metric-card{background:var(--surface);border:1px solid var(--border);border-left:3px solid var(--amber);
+             padding:10px 14px;flex:1;min-width:120px;}
+.metric-label{color:var(--muted);font-size:.56rem;letter-spacing:.1em;text-transform:uppercase;margin-bottom:4px;}
+.metric-value{color:#e8e8e8;font-size:.95rem;font-weight:700;}
+.metric-sub{color:var(--muted);font-size:.58rem;margin-top:2px;}
+.good{color:var(--green)!important;} .bad{color:var(--red)!important;} .warn{color:var(--amber)!important;}
+
+/* Tabs */
+.tabs{display:flex;border-bottom:2px solid var(--amber);margin-bottom:16px;flex-wrap:wrap;}
+.tab{background:transparent;border:none;color:var(--muted);font-family:var(--mono);font-size:.60rem;
+     font-weight:600;letter-spacing:.1em;text-transform:uppercase;padding:7px 14px;cursor:pointer;
+     border-right:1px solid var(--border);white-space:nowrap;}
+.tab:hover{background:#140e00;color:var(--amber2);}
+.tab.active{background:#140e00;color:var(--amber);border-bottom:2px solid var(--amber);margin-bottom:-2px;}
+.tab-panel{display:none;}.tab-panel.active{display:block;}
+
+/* Content */
+.section-title{color:var(--amber2);font-size:.68rem;font-weight:700;letter-spacing:.12em;text-transform:uppercase;
+               margin-bottom:10px;padding-bottom:4px;border-bottom:1px solid var(--border);}
+.two-col{display:grid;grid-template-columns:1fr 1fr;gap:16px;flex-wrap:wrap;}
+.data-table{width:100%;border-collapse:collapse;font-size:.68rem;}
+.data-table th{color:var(--amber);font-size:.58rem;font-weight:700;letter-spacing:.1em;text-transform:uppercase;
+               padding:6px 10px;text-align:left;border-bottom:2px solid var(--amber);background:#0d0d00;}
+.data-table td{padding:5px 10px;border-bottom:1px solid #1a1a1a;color:#c8c8c8;}
+.data-table td:last-child{text-align:right;color:#e8e8e8;font-weight:500;}
+.data-table tr:hover td{background:#140e00;color:var(--amber2);}
+.peer-table{width:100%;border-collapse:collapse;font-size:.62rem;}
+.peer-table th{color:var(--amber);font-size:.58rem;font-weight:700;letter-spacing:.08em;text-transform:uppercase;
+               padding:5px 8px;border-bottom:2px solid var(--amber);background:#0d0d00;text-align:right;}
+.peer-table th:first-child{text-align:left;}
+.peer-table td{padding:4px 8px;border-bottom:1px solid #1a1a1a;text-align:right;color:#c8c8c8;}
+.peer-table td:first-child{text-align:left;color:#e8e8e8;font-weight:600;}
+.peer-table tr:hover td{background:#140e00;}
+.badge{display:inline-block;padding:2px 8px;font-size:.58rem;font-weight:700;letter-spacing:.08em;}
+.badge-A{background:#001a00;color:var(--green);border:1px solid var(--green);}
+.badge-B{background:#1a1200;color:var(--amber);border:1px solid var(--amber);}
+.badge-C{background:#1a0000;color:var(--red);border:1px solid var(--red);}
+.bar-wrap{background:#1a1a1a;height:5px;border-radius:3px;margin-top:3px;}
+.bar-fill{height:5px;border-radius:3px;}
+.chart-bars{display:flex;align-items:flex-end;gap:4px;height:80px;margin-top:8px;}
+.chart-bar-item{display:flex;flex-direction:column;align-items:center;flex:1;}
+.chart-bar{width:100%;border-radius:2px 2px 0 0;min-height:2px;}
+.chart-bar-label{font-size:.50rem;color:var(--muted);margin-top:3px;text-align:center;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%;}
+.spinner{display:inline-block;width:14px;height:14px;border:2px solid #333;border-top-color:var(--amber);
+         border-radius:50%;animation:spin .7s linear infinite;vertical-align:middle;}
+@keyframes spin{to{transform:rotate(360deg)}}
+.loading-row{color:var(--muted);font-size:.68rem;padding:24px;text-align:center;}
+.err-msg{color:var(--red);font-size:.70rem;padding:12px;background:#1a0000;border:1px solid #3a0000;}
+.description-box{background:var(--surface);border:1px solid var(--border);padding:12px 14px;
+                 font-size:.66rem;color:#999;line-height:1.7;margin-top:12px;}
+.rec-box{text-align:center;padding:16px;background:var(--surface);border:1px solid var(--border);}
+.rec-label{color:var(--muted);font-size:.58rem;text-transform:uppercase;letter-spacing:.1em;margin-bottom:6px;}
+.rec-value{font-size:1.1rem;font-weight:700;}
+.altman-gauge{display:flex;flex-direction:column;gap:4px;margin-top:8px;}
+.altman-zone{display:flex;justify-content:space-between;align-items:center;padding:4px 10px;font-size:.62rem;}
+</style>
+</head>
+<body>
+<script src="/static/monarch-nav.js"></script>
+<div class="page">
+  <div class="page-title">Fundamental Research</div>
+  <div class="page-sub">Valuation · Profitability · Growth · Health · Cash Flow · Analyst Ratings</div>
+
+  <div class="controls">
+    <div class="ctrl-group">
+      <label class="ctrl-label">NSE Symbol</label>
+      <input class="ctrl-input" id="symInput" type="text" placeholder="e.g. RELIANCE" value="RELIANCE"
+             onkeydown="if(event.key==='Enter')loadFundamentals()" style="width:160px;text-transform:uppercase">
+    </div>
+    <button class="btn" id="loadBtn" onclick="loadFundamentals()">▶ Analyse</button>
+    <button class="btn" style="border-color:#333;color:var(--muted);background:transparent"
+            onclick="loadFundamentals(true)">↺ Refresh</button>
+  </div>
+
+  <div id="mainContent"><div class="loading-row">Enter a symbol and click Analyse.</div></div>
+</div>
+
+<script>
+let _data = null;
+
+function sym() { return document.getElementById('symInput').value.trim().toUpperCase(); }
+
+function switchTab(name) {
+  document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === name));
+  document.querySelectorAll('.tab-panel').forEach(p => p.classList.toggle('active', p.id === 'tp-' + name));
+}
+
+async function loadFundamentals(refresh = false) {
+  const s = sym();
+  if (!s) return;
+  const btn = document.getElementById('loadBtn');
+  btn.disabled = true; btn.textContent = '⟳ Loading…';
+  document.getElementById('mainContent').innerHTML = '<div class="loading-row"><span class="spinner"></span> Fetching fundamental data…</div>';
+  try {
+    const r = await fetch(`/api/fundamentals/${s}${refresh ? '?refresh=true' : ''}`);
+    if (!r.ok) throw new Error(await r.text());
+    _data = await r.json();
+    renderAll(_data);
+  } catch(e) {
+    document.getElementById('mainContent').innerHTML = `<div class="err-msg">✘ ${e.message}</div>`;
+  }
+  btn.disabled = false; btn.textContent = '▶ Analyse';
+}
+
+function fv(v, suf='', dec=2, pct=false) {
+  if (v == null) return '—';
+  const n = parseFloat(v);
+  if (isNaN(n)) return v;
+  return (pct && n > 0 ? '+' : '') + n.toFixed(dec) + suf;
+}
+function clrClass(v, lo=0, hi=100, inv=false) {
+  if (v == null) return '';
+  return inv ? (v < lo ? 'good' : v > hi ? 'bad' : 'warn') : (v > hi ? 'good' : v < lo ? 'bad' : 'warn');
+}
+function badge(g) { return g === '—' ? '—' : `<span class="badge badge-${g}">${g}</span>`; }
+
+function renderAll(data) {
+  const s = data.snapshot;
+  const metrics = [
+    { label: 'Market Cap', value: s.market_cap_cr ? `₹${(s.market_cap_cr/1e2).toFixed(0)}Cr` : '—' },
+    { label: 'P/E (TTM)', value: fv(s.pe_ttm), cls: clrClass(s.pe_ttm, 0, 25, true) },
+    { label: 'P/B', value: fv(s.pb), cls: clrClass(s.pb, 0, 4, true) },
+    { label: 'ROE', value: fv(s.roe, '%'), cls: clrClass(s.roe, 10, 20) },
+    { label: 'Profit Margin', value: fv(s.profit_margin, '%'), cls: clrClass(s.profit_margin, 10, 20) },
+    { label: 'Revenue Gr.', value: fv(s.revenue_growth, '%', 1, true), cls: clrClass(s.revenue_growth, 10, 25) },
+    { label: 'D/E Ratio', value: fv(s.debt_equity), cls: clrClass(s.debt_equity, 0, 1, true) },
+    { label: 'Div Yield', value: fv(s.dividend_yield, '%') },
+  ];
+
+  document.getElementById('mainContent').innerHTML = `
+    <div style="margin-bottom:12px">
+      <div style="color:var(--amber);font-size:.85rem;font-weight:700">${s.name} &nbsp;<span style="color:var(--muted);font-size:.65rem">(${s.symbol})</span></div>
+      <div style="color:var(--muted);font-size:.62rem;margin-top:2px">${s.sector} &nbsp;·&nbsp; ${s.industry}</div>
+    </div>
+    <div class="metrics-row">${metrics.map(m =>
+      `<div class="metric-card"><div class="metric-label">${m.label}</div><div class="metric-value ${m.cls||''}">${m.value}</div></div>`
+    ).join('')}</div>
+
+    <div class="tabs">
+      <button class="tab active" data-tab="snapshot" onclick="switchTab('snapshot')">Snapshot</button>
+      <button class="tab" data-tab="valuation" onclick="switchTab('valuation')">Valuation</button>
+      <button class="tab" data-tab="profitability" onclick="switchTab('profitability')">Profitability</button>
+      <button class="tab" data-tab="growth" onclick="switchTab('growth')">Growth</button>
+      <button class="tab" data-tab="health" onclick="switchTab('health')">Health</button>
+      <button class="tab" data-tab="cashflow" onclick="switchTab('cashflow')">Cash Flow</button>
+      <button class="tab" data-tab="earnings" onclick="switchTab('earnings')">Earnings</button>
+      <button class="tab" data-tab="analyst" onclick="switchTab('analyst')">Analyst</button>
+      <button class="tab" data-tab="peers" onclick="switchTab('peers')">Peers</button>
+    </div>
+
+    <div id="tp-snapshot" class="tab-panel active">${renderSnapshot(data)}</div>
+    <div id="tp-valuation" class="tab-panel">${renderValuation(data)}</div>
+    <div id="tp-profitability" class="tab-panel">${renderProfitability(data)}</div>
+    <div id="tp-growth" class="tab-panel">${renderGrowth(data)}</div>
+    <div id="tp-health" class="tab-panel">${renderHealth(data)}</div>
+    <div id="tp-cashflow" class="tab-panel">${renderCashflow(data)}</div>
+    <div id="tp-earnings" class="tab-panel">${renderEarnings(data)}</div>
+    <div id="tp-analyst" class="tab-panel">${renderAnalyst(data)}</div>
+    <div id="tp-peers" class="tab-panel"><div class="loading-row" id="peersPlaceholder">
+      <button class="btn sm" onclick="loadPeers()">Load Peer Comparison</button>
+    </div></div>
+  `;
+}
+
+function dataRow(label, value, cls='') {
+  return `<tr><td>${label}</td><td class="${cls}">${value}</td></tr>`;
+}
+
+function renderSnapshot(data) {
+  const s = data.snapshot;
+  return `<div class="two-col">
+    <div>
+      <div class="section-title">Valuation</div>
+      <table class="data-table">
+        ${dataRow('P/E Trailing (TTM)', fv(s.pe_ttm), clrClass(s.pe_ttm,0,25,true))}
+        ${dataRow('P/E Forward', fv(s.forward_pe), clrClass(s.forward_pe,0,20,true))}
+        ${dataRow('Price / Book', fv(s.pb), clrClass(s.pb,0,4,true))}
+        ${dataRow('Price / Sales', fv(s.ps), clrClass(s.ps,0,5,true))}
+        ${dataRow('EV / EBITDA', fv(s.ev_ebitda), clrClass(s.ev_ebitda,0,15,true))}
+        ${dataRow('EV / Revenue', fv(s.ev_revenue))}
+        ${dataRow('Beta', fv(s.beta))}
+        ${dataRow('Book Value / Share', fv(s.book_value, '₹'))}
+        ${dataRow('EPS (TTM)', fv(s.eps_ttm, '₹'))}
+      </table>
+    </div>
+    <div>
+      <div class="section-title">Efficiency & Returns</div>
+      <table class="data-table">
+        ${dataRow('ROE', fv(s.roe, '%'), clrClass(s.roe,10,25))}
+        ${dataRow('ROA', fv(s.roa, '%'), clrClass(s.roa,5,15))}
+        ${dataRow('Gross Margin', fv(s.gross_margin, '%'), clrClass(s.gross_margin,20,40))}
+        ${dataRow('EBITDA Margin', fv(s.ebitda_margin, '%'), clrClass(s.ebitda_margin,15,30))}
+        ${dataRow('Operating Margin', fv(s.op_margin, '%'), clrClass(s.op_margin,10,25))}
+        ${dataRow('Profit Margin', fv(s.profit_margin, '%'), clrClass(s.profit_margin,10,20))}
+        ${dataRow('Revenue Growth (1Y)', fv(s.revenue_growth, '%', 1, true), clrClass(s.revenue_growth,10,25))}
+        ${dataRow('Earnings Growth (1Y)', fv(s.earn_growth, '%', 1, true), clrClass(s.earn_growth,10,30))}
+      </table>
+    </div>
+  </div>
+  <div class="description-box">${s.description || '—'}</div>`;
+}
+
+function renderValuation(data) {
+  const s = data.snapshot;
+  const items = [
+    ['P/E (TTM)', s.pe_ttm, 'x', 8, 40, true],
+    ['P/E (Fwd)', s.forward_pe, 'x', 8, 30, true],
+    ['P/B', s.pb, 'x', 1, 6, true],
+    ['P/S', s.ps, 'x', 0.5, 5, true],
+    ['EV/EBITDA', s.ev_ebitda, 'x', 5, 20, true],
+  ];
+  return `<div class="section-title">Valuation Ratios</div>
+    ${items.map(([label, val, suf, lo, hi, inv]) => {
+      const pct = val ? Math.min(100, val / hi * 60) : 0;
+      const cls = clrClass(val, lo, hi, inv);
+      return `<div style="margin-bottom:10px">
+        <div style="display:flex;justify-content:space-between;font-size:.65rem;">
+          <span style="color:var(--muted)">${label}</span>
+          <span class="${cls}">${fv(val, suf)}</span>
+        </div>
+        <div class="bar-wrap"><div class="bar-fill" style="width:${pct}%;background:${cls==='good'?'var(--green)':cls==='bad'?'var(--red)':'var(--amber)'}"></div></div>
+      </div>`;
+    }).join('')}
+    <div class="section-title" style="margin-top:16px">52-Week Range</div>
+    ${(() => {
+      const lo = s['52w_low'], hi = s['52w_high'], cur = s.analyst_target;
+      if (!lo || !hi) return '<div style="color:var(--muted);font-size:.65rem">—</div>';
+      const rng = hi - lo;
+      const curPct = Math.min(100, Math.max(0, (cur - lo) / rng * 100));
+      return `<div style="font-size:.62rem;display:flex;justify-content:space-between;margin-bottom:4px">
+        <span style="color:var(--red)">₹${lo.toFixed(0)}</span>
+        <span style="color:var(--muted)">52-Week Range</span>
+        <span style="color:var(--green)">₹${hi.toFixed(0)}</span>
+      </div>
+      <div class="bar-wrap" style="height:8px;position:relative">
+        <div class="bar-fill" style="width:100%;background:linear-gradient(90deg,var(--red),var(--amber),var(--green));height:8px;opacity:.4"></div>
+      </div>`;
+    })()}`;
+}
+
+function renderProfitability(data) {
+  const s = data.snapshot;
+  const margins = [
+    ['Gross Margin', s.gross_margin, 20, 60],
+    ['EBITDA Margin', s.ebitda_margin, 15, 40],
+    ['Operating Margin', s.op_margin, 10, 30],
+    ['Profit Margin (Net)', s.profit_margin, 8, 25],
+  ];
+  const returns = [
+    ['Return on Equity (ROE)', s.roe, 10, 25],
+    ['Return on Assets (ROA)', s.roa, 5, 15],
+  ];
+  return `<div class="two-col">
+    <div>
+      <div class="section-title">Margin Analysis</div>
+      ${margins.map(([label, val, lo, hi]) => {
+        const pct = val ? Math.min(100, val / hi * 80) : 0;
+        const cls = clrClass(val, lo, hi);
+        return `<div style="margin-bottom:10px">
+          <div style="display:flex;justify-content:space-between;font-size:.65rem;">
+            <span style="color:var(--muted)">${label}</span>
+            <span class="${cls}">${fv(val,'%')}</span>
+          </div>
+          <div class="bar-wrap"><div class="bar-fill" style="width:${pct}%;background:${cls==='good'?'var(--green)':cls==='bad'?'var(--red)':'var(--amber)'}"></div></div>
+        </div>`;
+      }).join('')}
+    </div>
+    <div>
+      <div class="section-title">Returns</div>
+      ${returns.map(([label, val, lo, hi]) => {
+        const pct = val ? Math.min(100, val / hi * 80) : 0;
+        const cls = clrClass(val, lo, hi);
+        return `<div style="margin-bottom:10px">
+          <div style="display:flex;justify-content:space-between;font-size:.65rem;">
+            <span style="color:var(--muted)">${label}</span>
+            <span class="${cls}">${fv(val,'%')}</span>
+          </div>
+          <div class="bar-wrap"><div class="bar-fill" style="width:${pct}%;background:${cls==='good'?'var(--green)':cls==='bad'?'var(--red)':'var(--amber)'}"></div></div>
+        </div>`;
+      }).join('')}
+      <div class="section-title" style="margin-top:16px">Dividends</div>
+      <table class="data-table">
+        ${dataRow('Dividend Yield', fv(data.snapshot.dividend_yield,'%'))}
+        ${dataRow('Payout Ratio', fv(data.snapshot.payout_ratio,'%'))}
+        ${dataRow('Beta', fv(data.snapshot.beta))}
+      </table>
+    </div>
+  </div>`;
+}
+
+function renderGrowth(data) {
+  const g = data.growth;
+  const ann = data.annual;
+  function sparkBars(series, color) {
+    if (!series || !series.length) return '<div style="color:var(--muted);font-size:.62rem">No data</div>';
+    const vals = series.map(x => x.value_cr);
+    const maxV = Math.max(...vals.map(Math.abs), 1);
+    return `<div class="chart-bars">${series.map(item => {
+      const h = Math.max(2, Math.abs(item.value_cr) / maxV * 70);
+      const clr = item.value_cr >= 0 ? color : 'var(--red)';
+      const lbl = item.date.slice(0,4);
+      return `<div class="chart-bar-item">
+        <div class="chart-bar" style="height:${h}px;background:${clr}"></div>
+        <div class="chart-bar-label">${lbl}</div>
+      </div>`;
+    }).join('')}</div>`;
+  }
+  return `<div class="two-col">
+    <div>
+      <div class="section-title">Revenue (Annual, ₹ Cr)</div>
+      ${sparkBars(ann.revenue, 'var(--blue)')}
+      <table class="data-table" style="margin-top:12px">
+        ${dataRow('Revenue CAGR 1Y', fv(g.rev_1y,'%',1,true), clrClass(g.rev_1y,10,25))}
+        ${dataRow('Revenue CAGR 3Y', fv(g.rev_3y,'%',1,true), clrClass(g.rev_3y,10,20))}
+        ${dataRow('Revenue Growth (TTM)', fv(data.snapshot.revenue_growth,'%',1,true), clrClass(data.snapshot.revenue_growth,10,25))}
+      </table>
+    </div>
+    <div>
+      <div class="section-title">Net Income (Annual, ₹ Cr)</div>
+      ${sparkBars(ann.net_income, 'var(--green)')}
+      <table class="data-table" style="margin-top:12px">
+        ${dataRow('Net Income CAGR 1Y', fv(g.ni_1y,'%',1,true), clrClass(g.ni_1y,10,30))}
+        ${dataRow('Net Income CAGR 3Y', fv(g.ni_3y,'%',1,true), clrClass(g.ni_3y,10,25))}
+        ${dataRow('Earnings Growth (TTM)', fv(data.snapshot.earn_growth,'%',1,true), clrClass(data.snapshot.earn_growth,10,30))}
+      </table>
+    </div>
+  </div>
+  <div style="margin-top:16px">
+    <div class="section-title">EBITDA (Annual, ₹ Cr)</div>
+    ${sparkBars(ann.ebitda, 'var(--amber)')}
+  </div>`;
+}
+
+function renderHealth(data) {
+  const s = data.snapshot;
+  const z = data.altman_z;
+  const zColor = z == null ? 'var(--muted)' : z > 2.99 ? 'var(--green)' : z > 1.81 ? 'var(--amber)' : 'var(--red)';
+  const zLabel = z == null ? '—' : z > 2.99 ? 'SAFE ZONE' : z > 1.81 ? 'GREY ZONE' : 'DISTRESS';
+  return `<div class="two-col">
+    <div>
+      <div class="section-title">Leverage & Liquidity</div>
+      <table class="data-table">
+        ${dataRow('Debt / Equity', fv(s.debt_equity,'x'), clrClass(s.debt_equity,0,1,true))}
+        ${dataRow('Current Ratio', fv(s.current_ratio,'x'), clrClass(s.current_ratio,1,2))}
+        ${dataRow('Quick Ratio', fv(s.quick_ratio,'x'), clrClass(s.quick_ratio,0.8,1.5))}
+      </table>
+    </div>
+    <div>
+      <div class="section-title">Altman Z-Score</div>
+      <div style="background:var(--surface);border:1px solid var(--border);border-left:3px solid ${zColor};padding:14px;">
+        <div style="font-size:1.4rem;font-weight:700;color:${zColor}">${z != null ? z.toFixed(2) : '—'}</div>
+        <div style="font-size:.62rem;color:${zColor};margin-top:2px">${zLabel}</div>
+        <div class="altman-gauge" style="margin-top:10px">
+          <div class="altman-zone" style="background:#001a00;color:var(--green)">Z > 2.99 → Safe Zone</div>
+          <div class="altman-zone" style="background:#1a1200;color:var(--amber)">1.81 &lt; Z &lt; 2.99 → Grey Zone</div>
+          <div class="altman-zone" style="background:#1a0000;color:var(--red)">Z &lt; 1.81 → Distress Zone</div>
+        </div>
+      </div>
+    </div>
+  </div>`;
+}
+
+function renderCashflow(data) {
+  const cf = data.cashflow;
+  function miniTable(title, series) {
+    if (!series || !series.length) return `<div class="section-title">${title}</div><div style="color:var(--muted);font-size:.62rem">No data</div>`;
+    return `<div class="section-title">${title} (₹ Cr)</div>
+      <table class="data-table">
+        <thead><tr><th>Year</th><th>Value</th></tr></thead>
+        <tbody>${[...series].reverse().map(r =>
+          `<tr><td>${r.date.slice(0,4)}</td><td class="${r.value_cr >= 0 ? 'good' : 'bad'}">${r.value_cr >= 0 ? '+' : ''}${r.value_cr.toFixed(0)}</td></tr>`
+        ).join('')}</tbody>
+      </table>`;
+  }
+  return `<div class="two-col">
+    <div>${miniTable('Operating Cash Flow', cf.ocf)}</div>
+    <div>${miniTable('Free Cash Flow', cf.fcf)}</div>
+  </div>
+  <div style="margin-top:16px">${miniTable('Capital Expenditure', cf.capex)}</div>`;
+}
+
+function renderEarnings(data) {
+  const eq = data.earnings_q || [];
+  if (!eq.length) return '<div class="loading-row">No quarterly earnings data available.</div>';
+  return `<div class="section-title">Quarterly EPS Trend (Last 8 Quarters)</div>
+    <div class="table-wrap"><table class="data-table" style="width:100%">
+      <thead><tr>
+        <th>Quarter</th><th>Reported EPS</th><th>Est EPS</th><th>Surprise %</th><th>Result</th>
+      </tr></thead>
+      <tbody>${eq.map(r => `<tr>
+        <td>${r.date}</td>
+        <td>${fv(r.reported,'₹')}</td>
+        <td>${fv(r.estimate,'₹')}</td>
+        <td class="${r.beat ? 'good' : 'bad'}">${r.surprise_pct != null ? (r.beat ? '+' : '') + r.surprise_pct.toFixed(1) + '%' : '—'}</td>
+        <td>${r.beat ? '<span style="color:var(--green)">✔ BEAT</span>' : '<span style="color:var(--red)">✘ MISS</span>'}</td>
+      </tr>`).join('')}</tbody>
+    </table></div>`;
+}
+
+function renderAnalyst(data) {
+  const s = data.snapshot;
+  const rec = (s.recommendation || '').toUpperCase();
+  const recClr = ['BUY','STRONG_BUY'].includes(rec) ? 'var(--green)' : ['SELL','STRONG_SELL'].includes(rec) ? 'var(--red)' : 'var(--amber)';
+  const target = s.analyst_target;
+  // TODO: fetch current price from API; use analyst_target vs book or pe-implied
+  return `<div class="two-col">
+    <div>
+      <div class="rec-box" style="border-left:3px solid ${recClr}">
+        <div class="rec-label">Consensus Recommendation</div>
+        <div class="rec-value" style="color:${recClr}">${s.recommendation || '—'}</div>
+        <div style="color:var(--muted);font-size:.60rem;margin-top:4px">${s.analyst_count || 0} analysts</div>
+      </div>
+    </div>
+    <div>
+      <div class="section-title">Price Targets</div>
+      <table class="data-table">
+        ${dataRow('Mean Target', fv(target, '₹', 2))}
+        ${dataRow('High Target', fv(s.analyst_high, '₹', 2))}
+        ${dataRow('Low Target', fv(s.analyst_low, '₹', 2))}
+        ${dataRow('Analysts', s.analyst_count || '—')}
+      </table>
+    </div>
+  </div>`;
+}
+
+async function loadPeers() {
+  const s = sym();
+  document.getElementById('peersPlaceholder').innerHTML = '<span class="spinner"></span> Loading peers…';
+  try {
+    const r = await fetch(`/api/fundamentals/${s}/peers`);
+    if (!r.ok) throw new Error(await r.text());
+    const d = await r.json();
+    const cols = ['pe_ttm','pb','roe','profit_margin','debt_equity','revenue_growth','market_cap_cr'];
+    const labels = ['P/E','P/B','ROE%','Margin%','D/E','Rev Gr%','MCap Cr'];
+    const all = [d.primary, ...d.peers].filter(Boolean);
+    const html = `<div class="section-title">Peer Comparison — ${d.sector}</div>
+      <div class="table-wrap"><table class="peer-table">
+        <thead><tr><th>Symbol</th>${labels.map(l=>`<th>${l}</th>`).join('')}</tr></thead>
+        <tbody>${all.map((row, i) => `<tr style="${i===0?'background:#0d0d00;':''}">
+          <td style="${i===0?'color:var(--amber);font-weight:700':''}">${row.symbol}</td>
+          ${cols.map(c => `<td>${row[c] != null ? parseFloat(row[c]).toFixed(1) : '—'}</td>`).join('')}
+        </tr>`).join('')}</tbody>
+      </table></div>`;
+    document.getElementById('peersPlaceholder').parentElement.innerHTML = html;
+  } catch(e) {
+    document.getElementById('peersPlaceholder').innerHTML = `<div class="err-msg">✘ ${e.message}</div>`;
+  }
+}
+</script>
+</body>
+</html>
