@@ -7,113 +7,276 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@300;400;600;700&display=swap" rel="stylesheet">
 <style>
-:root{--amber:#ff8c00;--amber2:#ffb347;--green:#00d084;--red:#ff3b3b;--blue:#1e90ff;
-      --bg:#0a0a0a;--surface:#111;--border:#2a2a2a;--muted:#888;--dim:#555;
-      --mono:'IBM Plex Mono',monospace;}
-*,*::before,*::after{box-sizing:border-box;margin:0;padding:0;}
-html,body{background:var(--bg);color:#e8e8e8;font-family:var(--mono);font-size:12px;min-height:100vh;}
-::-webkit-scrollbar{width:6px;height:6px;}::-webkit-scrollbar-track{background:#0a0a0a;}
-::-webkit-scrollbar-thumb{background:#333;}::-webkit-scrollbar-thumb:hover{background:var(--amber);}
+/* ══════════════════════════════════════════════
+   MONARCH PRO — Bloomberg Terminal Theme
+   All colours via CSS variables — change one
+   variable, the whole UI updates consistently.
+   Zero hardcoded pixel values for data logic.
+══════════════════════════════════════════════ */
+:root {
+  --amber:   #ff8c00;
+  --amber2:  #ffb347;
+  --green:   #00d084;
+  --green2:  #00ff88;
+  --red:     #ff3b3b;
+  --blue:    #1e90ff;
+  --cyan:    #00ccff;
+  --purple:  #cc88ff;
+  --bg:      #0a0a0a;
+  --surface: #111111;
+  --surface2:#161616;
+  --border:  #2a2a2a;
+  --border2: #1a1a1a;
+  --muted:   #888888;
+  --dim:     #555555;
+  --white:   #e8e8e8;
+  --white2:  #c8c8c8;
+  --mono:    'IBM Plex Mono', monospace;
+}
+*,*::before,*::after { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { background: var(--bg); color: var(--white); font-family: var(--mono); font-size: 14px; min-height: 100vh; }
+::-webkit-scrollbar { width: 5px; height: 5px; }
+::-webkit-scrollbar-track { background: #070707; }
+::-webkit-scrollbar-thumb { background: #2a2a2a; }
+::-webkit-scrollbar-thumb:hover { background: var(--amber); }
 
-/* Layout */
-.terminal{display:flex;flex-direction:column;height:100vh;}
-.main-area{display:flex;flex:1;overflow:hidden;}
-.sidebar{width:220px;flex-shrink:0;background:#080808;border-right:1px solid var(--border);
-         overflow-y:auto;display:flex;flex-direction:column;}
-.content{flex:1;overflow:auto;padding:12px 16px;}
+/* ── LAYOUT ── */
+.terminal { display: flex; flex-direction: column; height: 100vh; }
+.main-area { display: flex; flex: 1; overflow: hidden; }
+.sidebar { width: 220px; flex-shrink: 0; background: #080808; border-right: 1px solid var(--border); overflow-y: auto; display: flex; flex-direction: column; }
+.content { flex: 1; overflow: auto; padding: 10px 14px; }
 
-/* Sidebar */
-.sidebar-section{padding:10px 14px;border-bottom:1px solid #1a1a1a;}
-.sidebar-label{color:var(--muted);font-size:.55rem;letter-spacing:.12em;text-transform:uppercase;
-               margin-bottom:6px;display:block;}
-.ctrl-select,.ctrl-input{width:100%;background:#0d0d0d;border:1px solid #222;color:#e8e8e8;
-                          font-family:var(--mono);font-size:.68rem;padding:5px 8px;outline:none;margin-bottom:6px;}
-.ctrl-select:focus,.ctrl-input:focus{border-color:var(--amber);}
-.btn-full{width:100%;background:#140e00;color:var(--amber);border:1px solid var(--amber);
-          font-family:var(--mono);font-size:.65rem;font-weight:700;letter-spacing:.10em;
-          text-transform:uppercase;padding:7px 0;cursor:pointer;margin-bottom:4px;}
-.btn-full:hover{background:var(--amber);color:#000;}
-.btn-full:disabled{opacity:.4;cursor:not-allowed;}
-.btn-sm{background:transparent;color:var(--muted);border:1px solid #222;font-family:var(--mono);
-        font-size:.60rem;padding:4px 8px;cursor:pointer;width:100%;margin-bottom:4px;}
-.btn-sm:hover{border-color:var(--amber);color:var(--amber);}
-.progress-bar{height:3px;background:#1a1a1a;margin-top:4px;}
-.progress-fill{height:3px;background:var(--amber);transition:width .3s;}
-.status-text{font-size:.58rem;color:var(--muted);margin-top:4px;}
+/* ── SIDEBAR ── */
+.sidebar-section { padding: 9px 12px; border-bottom: 1px solid var(--border2); }
+.sidebar-label { color: var(--muted); font-size: .54rem; letter-spacing: .13em; text-transform: uppercase; margin-bottom: 5px; display: block; }
+.ctrl-select, .ctrl-input {
+  width: 100%; background: #0d0d0d; border: 1px solid #1e1e1e; color: var(--white);
+  font-family: var(--mono); font-size: .67rem; padding: 4px 7px; outline: none; margin-bottom: 5px;
+}
+.ctrl-select:focus, .ctrl-input:focus { border-color: var(--amber); }
+.btn-full {
+  width: 100%; background: #140e00; color: var(--amber); border: 1px solid var(--amber);
+  font-family: var(--mono); font-size: .63rem; font-weight: 700; letter-spacing: .10em;
+  text-transform: uppercase; padding: 6px 0; cursor: pointer; margin-bottom: 3px;
+  transition: background .15s, color .15s;
+}
+.btn-full:hover { background: var(--amber); color: #000; }
+.btn-full:disabled { opacity: .35; cursor: not-allowed; }
+.btn-sm {
+  background: transparent; color: var(--muted); border: 1px solid #1e1e1e;
+  font-family: var(--mono); font-size: .59rem; padding: 3px 7px; cursor: pointer;
+  width: 100%; margin-bottom: 3px; text-align: left;
+  transition: border-color .15s, color .15s;
+}
+.btn-sm:hover { border-color: var(--amber); color: var(--amber); }
+.progress-bar { height: 2px; background: #1a1a1a; margin-top: 4px; }
+.progress-fill { height: 2px; background: var(--amber); transition: width .3s; }
+.status-text { font-size: .57rem; color: var(--muted); margin-top: 3px; }
+.mkt-row { display: flex; justify-content: space-between; align-items: center; padding: 2px 0; font-size: .60rem; border-bottom: 1px solid var(--border2); }
+.mkt-row:last-child { border-bottom: none; }
+.mkt-key { color: var(--muted); }
+.mkt-val { font-weight: 600; }
+.bull { color: var(--green) !important; }
+.bear { color: var(--red) !important; }
+.neu  { color: var(--amber) !important; }
 
-/* Market context */
-.mkt-row{display:flex;justify-content:space-between;align-items:center;
-         padding:3px 0;font-size:.62rem;border-bottom:1px solid #1a1a1a;}
-.mkt-row:last-child{border-bottom:none;}
-.mkt-key{color:var(--muted);}
-.mkt-val{font-weight:600;}
-.bull{color:var(--green)!important;}
-.bear{color:var(--red)!important;}
-.neu{color:var(--amber)!important;}
+/* ── VIEW TABS (Core / Trade / Factor) ── */
+.view-tabs { display: flex; gap: 0; margin-bottom: 8px; border-bottom: 2px solid var(--amber); }
+.view-tab {
+  background: transparent; border: none; border-bottom: 2px solid transparent;
+  color: var(--muted); font-family: var(--mono); font-size: .60rem; font-weight: 700;
+  letter-spacing: .10em; text-transform: uppercase; padding: 6px 14px;
+  cursor: pointer; margin-bottom: -2px;
+  transition: color .15s, background .15s;
+}
+.view-tab:hover { color: var(--amber2); background: #140e00; }
+.view-tab.active { color: var(--amber); border-bottom-color: var(--amber); background: #140e00; }
 
-/* Table */
-.page-title{color:var(--amber);font-size:.90rem;font-weight:700;letter-spacing:.16em;
-            text-transform:uppercase;margin-bottom:12px;display:flex;align-items:center;gap:10px;}
-.filter-row{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px;align-items:center;}
-.filter-input{background:#0d0d0d;border:1px solid #222;color:#e8e8e8;font-family:var(--mono);
-              font-size:.65rem;padding:4px 8px;outline:none;width:160px;}
-.filter-input:focus{border-color:var(--amber);}
-.filter-label{color:var(--muted);font-size:.58rem;letter-spacing:.08em;text-transform:uppercase;}
-.filter-select{background:#0d0d0d;border:1px solid #222;color:#e8e8e8;font-family:var(--mono);
-               font-size:.65rem;padding:4px 8px;outline:none;}
-.results-count{color:var(--muted);font-size:.60rem;margin-left:auto;}
+/* ── FILTER ROW ── */
+.page-title { color: var(--amber); font-size: .88rem; font-weight: 700; letter-spacing: .16em; text-transform: uppercase; margin-bottom: 9px; display: flex; align-items: center; gap: 10px; }
+.filter-row { display: flex; gap: 7px; flex-wrap: wrap; margin-bottom: 8px; align-items: center; }
+.filter-input { background: #0d0d0d; border: 1px solid #1e1e1e; color: var(--white); font-family: var(--mono); font-size: .63rem; padding: 3px 7px; outline: none; width: 155px; }
+.filter-input:focus { border-color: var(--amber); }
+.filter-label { color: var(--muted); font-size: .57rem; letter-spacing: .08em; text-transform: uppercase; }
+.filter-select { background: #0d0d0d; border: 1px solid #1e1e1e; color: var(--white); font-family: var(--mono); font-size: .63rem; padding: 3px 7px; outline: none; }
+.results-count { color: var(--muted); font-size: .58rem; margin-left: auto; }
+.sector-pills { display: flex; flex-wrap: wrap; gap: 3px; margin-bottom: 6px; }
+.sector-pill { font-size: .54rem; padding: 2px 6px; background: #0d0d0d; border: 1px solid #1e1e1e; color: var(--muted); cursor: pointer; transition: border-color .15s, color .15s; }
+.sector-pill:hover, .sector-pill.active { border-color: var(--amber); color: var(--amber); }
 
-.table-wrap{overflow-x:auto;}
-table{width:100%;border-collapse:collapse;font-size:.64rem;}
-thead{position:sticky;top:0;z-index:2;}
-th{background:#0d0d00;color:var(--amber);font-size:.56rem;font-weight:700;letter-spacing:.10em;
-   text-transform:uppercase;padding:6px 8px;text-align:right;border-bottom:2px solid var(--amber);
-   white-space:nowrap;cursor:pointer;user-select:none;}
-th:first-child,th:nth-child(2){text-align:left;}
-th:hover{color:var(--amber2);}
-td{padding:4px 8px;text-align:right;border-bottom:1px solid #161616;white-space:nowrap;color:#b8b8b8;}
-td:first-child,td:nth-child(2){text-align:left;}
-tr:hover td{background:#140e00;color:var(--amber2);}
-.rank-cell{color:var(--dim);font-size:.58rem;}
-.ticker-cell{color:var(--amber2);font-weight:700;cursor:pointer;}
-.ticker-cell:hover{color:var(--amber);text-decoration:underline;}
-.score-cell{font-weight:700;}
-.tag{display:inline-block;font-size:.52rem;padding:1px 5px;margin-left:3px;border-radius:2px;}
-.tag-vcp{background:#001a10;color:var(--green);border:1px solid #00d08444;}
-.tag-bo{background:#1a0e00;color:var(--amber);border:1px solid #ff8c0044;}
-.tag-oi{background:#0a0015;color:var(--blue);border:1px solid #1e90ff44;}
+/* ── TABLE ── */
+.table-wrap { overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; font-size: .75rem; }
+thead { position: sticky; top: 0; z-index: 2; }
+th {
+  background: #0d0d00; color: var(--amber); font-size: .54rem; font-weight: 700;
+  letter-spacing: .10em; text-transform: uppercase; padding: 5px 7px;
+  text-align: right; border-bottom: 2px solid var(--amber); white-space: nowrap;
+  cursor: pointer; user-select: none;
+}
+th:first-child, th:nth-child(2) { text-align: left; }
+th.sort-asc::after { content: ' ↑'; } th.sort-desc::after { content: ' ↓'; }
+th:hover { color: var(--amber2); }
+td { padding: 3px 7px; text-align: right; border-bottom: 1px solid #141414; white-space: nowrap; color: #b8b8b8; }
+td:first-child, td:nth-child(2) { text-align: left; }
+tr:hover td { background: #140e00; color: var(--amber2); }
+.rank-cell { color: var(--dim); font-size: .57rem; }
+.ticker-cell { color: var(--amber2); font-weight: 700; cursor: pointer; }
+.ticker-cell:hover { color: var(--amber); text-decoration: underline; }
+.score-cell { font-weight: 700; }
+.tag { display: inline-block; font-size: .50rem; padding: 1px 4px; margin-left: 2px; }
+.tag-vcp { background: #001a10; color: var(--green); border: 1px solid #00d08433; }
+.tag-bo  { background: #1a0e00; color: var(--amber); border: 1px solid #ff8c0033; }
+.tag-oi  { background: #0a0015; color: var(--blue);  border: 1px solid #1e90ff33; }
+.tag-rev { background: #1a0a00; color: #ff8c00; border: 1px solid #ff8c0055; }
+.sig { display: inline-block; width: 6px; height: 6px; border-radius: 50%; margin-right: 2px; vertical-align: middle; }
+.sig-g { background: var(--green); }
+.sig-n { background: #2a2a2a; }
+.empty-state { text-align: center; padding: 50px; color: var(--muted); font-size: .68rem; }
 
-/* Signal dots */
-.sig{display:inline-block;width:7px;height:7px;border-radius:50%;margin-right:2px;}
-.sig-g{background:var(--green);}
-.sig-r{background:var(--red);}
-.sig-n{background:#333;}
+/* ── SPINNERS ── */
+.spinner { display: inline-block; width: 15px; height: 15px; border: 2px solid #2a2a2a; border-top-color: var(--amber); border-radius: 50%; animation: spin .7s linear infinite; vertical-align: middle; }
+.spinner-sm { display: inline-block; width: 9px; height: 9px; border: 1.5px solid #2a2a2a; border-top-color: var(--amber); border-radius: 50%; animation: spin .7s linear infinite; vertical-align: middle; }
+@keyframes spin { to { transform: rotate(360deg); } }
 
-/* Empty / loading */
-.empty-state{text-align:center;padding:60px;color:var(--muted);font-size:.70rem;}
-.spinner{display:inline-block;width:16px;height:16px;border:2px solid #333;
-         border-top-color:var(--amber);border-radius:50%;animation:spin .7s linear infinite;vertical-align:middle;}
-@keyframes spin{to{transform:rotate(360deg)}}
+/* ── MODAL ── */
+.modal-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,.90); z-index: 1000; align-items: flex-start; justify-content: center; padding-top: 28px; overflow-y: auto; }
+.modal-overlay.open { display: flex; }
+.modal { background: #0d0d0d; border: 1px solid var(--border); border-top: 2px solid var(--amber); width: 95%; max-width: 1180px; max-height: 91vh; overflow-y: auto; }
+.modal-header { display: flex; align-items: center; justify-content: space-between; padding: 11px 16px; border-bottom: 1px solid var(--border); position: sticky; top: 0; background: #0d0d0d; z-index: 10; }
+.modal-title { color: var(--amber); font-size: .84rem; font-weight: 700; letter-spacing: .14em; text-transform: uppercase; }
+.modal-close { background: transparent; border: 1px solid #2a2a2a; color: var(--muted); font-family: var(--mono); font-size: .63rem; padding: 3px 9px; cursor: pointer; }
+.modal-close:hover { border-color: var(--red); color: var(--red); }
+.modal-tabs { display: flex; border-bottom: 1px solid var(--border); background: #080808; overflow-x: auto; }
+.modal-tab { background: transparent; border: none; color: var(--muted); font-family: var(--mono); font-size: .58rem; font-weight: 600; letter-spacing: .10em; text-transform: uppercase; padding: 7px 13px; cursor: pointer; border-right: 1px solid #1a1a1a; white-space: nowrap; transition: background .12s, color .12s; }
+.modal-tab:hover { background: #140e00; color: var(--amber2); }
+.modal-tab.active { background: #140e00; color: var(--amber); border-bottom: 2px solid var(--amber); }
+.modal-panel { display: none; padding: 14px 16px; }
+.modal-panel.active { display: block; }
 
-/* Sector pills */
-.sector-pills{display:flex;flex-wrap:wrap;gap:4px;margin-bottom:6px;}
-.sector-pill{font-size:.55rem;padding:2px 7px;background:#0d0d0d;border:1px solid #222;
-             color:var(--muted);cursor:pointer;}
-.sector-pill:hover,.sector-pill.active{border-color:var(--amber);color:var(--amber);}
+/* ── OVERVIEW FACTOR TILES ── */
+.factor-grid { display: flex; gap: 5px; flex-wrap: wrap; margin-bottom: 12px; }
+.factor-tile { background: #111; border: 1px solid #1a1a1a; padding: 4px 8px; min-width: 66px; }
+.factor-tile-label { color: var(--muted); font-size: .49rem; letter-spacing: .06em; text-transform: uppercase; }
+.factor-tile-val { font-weight: 700; font-size: .66rem; }
+.factor-tile-bar { background: #222; height: 2px; margin-top: 2px; border-radius: 1px; }
+
+/* ── SCORE GRID ── */
+.score-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(148px, 1fr)); gap: 7px; margin-bottom: 12px; }
+.score-item { background: #111; border: 1px solid #1a1a1a; padding: 7px 10px; }
+.score-item-label { color: var(--muted); font-size: .53rem; letter-spacing: .08em; text-transform: uppercase; margin-bottom: 2px; }
+.score-item-val { color: var(--white); font-size: .78rem; font-weight: 700; }
+
+/* ── TRADE CARDS ── */
+.trade-box { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
+.trade-card { flex: 1; min-width: 100px; background: #111; border: 1px solid #1a1a1a; padding: 9px 10px; text-align: center; }
+.trade-label { color: var(--muted); font-size: .53rem; text-transform: uppercase; letter-spacing: .08em; margin-bottom: 3px; }
+.trade-val { font-size: .88rem; font-weight: 700; }
+
+/* ── EXPLAIN TABLE ── */
+.explain-table { width: 100%; border-collapse: collapse; font-size: .62rem; }
+.explain-table th { color: var(--amber); font-size: .55rem; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; padding: 5px 9px; border-bottom: 2px solid var(--amber); background: #0d0d00; text-align: left; }
+.explain-table td { padding: 4px 9px; border-bottom: 1px solid #1a1a1a; vertical-align: top; }
+.explain-table td:nth-child(1) { color: var(--amber2); font-weight: 600; white-space: nowrap; width: 120px; }
+.explain-table td:nth-child(2) { color: var(--white); font-weight: 700; white-space: nowrap; width: 106px; }
+.explain-table td:nth-child(3) { color: var(--muted); }
+.explain-table td:nth-child(4) { color: var(--white2); }
+.explain-table tr:hover td { background: #140e00; }
+
+/* ── MISC ── */
+.note-box { background: #111; border: 1px solid #1a1a1a; padding: 10px 12px; margin-bottom: 8px; }
+.note-box.amber { border-left: 3px solid var(--amber); }
+.note-box.blue  { border-left: 3px solid var(--blue); }
+.note-box-label { color: var(--muted); font-size: .53rem; text-transform: uppercase; letter-spacing: .1em; margin-bottom: 3px; }
+.note-box-text  { font-size: .67rem; color: var(--white2); line-height: 1.5; }
+.btn-inline { background: #140e00; color: var(--amber); border: 1px solid var(--amber); font-family: var(--mono); font-size: .61rem; font-weight: 600; padding: 4px 11px; cursor: pointer; transition: background .12s; }
+.btn-inline:hover { background: var(--amber); color: #000; }
+.btn-inline.sec { background: transparent; border-color: #2a2a2a; color: var(--muted); }
+.btn-inline.sec:hover { border-color: var(--amber2); color: var(--amber2); background: transparent; }
+.btn-inline:disabled { opacity: .35; cursor: not-allowed; }
+.flash { font-size: .61rem; margin-top: 4px; min-height: 15px; }
+.flash.ok  { color: var(--green); }
+.flash.err { color: var(--red); }
+.quick-links { display: flex; gap: 5px; flex-wrap: wrap; }
+.quick-link { border: 1px solid #2a2a2a; color: var(--muted); font-family: var(--mono); font-size: .56rem; padding: 3px 8px; cursor: pointer; text-decoration: none; display: inline-block; background: transparent; transition: border-color .12s, color .12s; }
+.quick-link:hover { border-color: var(--amber); color: var(--amber); }
+.wl-row { display: flex; align-items: center; gap: 7px; padding: 4px 0; border-bottom: 1px solid #1a1a1a; }
+.wl-row:last-child { border-bottom: none; }
+.wl-sym  { color: var(--amber2); font-weight: 700; font-size: .68rem; flex: 0 0 72px; cursor: pointer; }
+.wl-sym:hover { color: var(--amber); }
+.wl-note { color: var(--muted); font-size: .61rem; flex: 1; }
+.wl-date { color: var(--dim); font-size: .57rem; flex: 0 0 84px; text-align: right; }
+.wl-del  { background: transparent; border: 1px solid #2a2a2a; color: var(--dim); font-family: var(--mono); font-size: .55rem; padding: 2px 5px; cursor: pointer; }
+.wl-del:hover { border-color: var(--red); color: var(--red); }
+.calib-title { color: var(--amber2); font-size: .63rem; font-weight: 700; letter-spacing: .10em; text-transform: uppercase; margin-bottom: 8px; padding-bottom: 4px; border-bottom: 1px solid var(--border); }
+.stat-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 7px; margin-bottom: 10px; }
+.stat-card { background: #111; border: 1px solid #1a1a1a; border-left: 3px solid var(--amber); padding: 7px 10px; }
+.stat-label { color: var(--muted); font-size: .53rem; text-transform: uppercase; letter-spacing: .08em; margin-bottom: 2px; }
+.stat-val { color: var(--white); font-size: .78rem; font-weight: 700; }
+.q-table { width: 100%; border-collapse: collapse; font-size: .62rem; }
+.q-table th { color: var(--amber); font-size: .54rem; letter-spacing: .08em; text-transform: uppercase; padding: 4px 9px; border-bottom: 2px solid var(--amber); background: #0d0d00; text-align: left; }
+.q-table td { padding: 4px 9px; border-bottom: 1px solid #1a1a1a; color: var(--white2); }
+.q-table tr:hover td { background: #140e00; }
+.news-item { border-bottom: 1px solid #1a1a1a; padding: 9px 0; }
+.news-item:last-child { border-bottom: none; }
+.news-title a { color: var(--white); font-size: .68rem; font-weight: 600; line-height: 1.4; text-decoration: none; }
+.news-title a:hover { color: var(--amber); }
+.news-meta { color: var(--muted); font-size: .57rem; display: flex; gap: 10px; margin-top: 2px; }
+.news-summary { color: var(--dim); font-size: .61rem; margin-top: 3px; line-height: 1.5; }
+
+/* ── BLINK ON DATA CHANGE ── */
+@keyframes rowBlink {
+  0%   { background: rgba(0,208,132,.22); }
+  40%  { background: rgba(0,208,132,.10); }
+  100% { background: transparent; }
+}
+/* Apply to the row, not individual tds — avoids specificity fight with tr:hover td.
+   !important is needed so the blink beats the tr:hover td { background: #140e00 } rule. */
+tr.row-updated { animation: rowBlink 1.1s ease-out forwards; }
+tr.row-updated td { color: var(--green2) !important; animation: none; }
+
+/* ── SSE STATUS DOT ── */
+.sse-dot {
+  display: inline-block; width: 7px; height: 7px; border-radius: 50%;
+  background: var(--dim); margin-left: 6px; vertical-align: middle;
+  transition: background .3s;
+}
+.sse-dot.live    { background: var(--green); box-shadow: 0 0 4px var(--green); }
+.sse-dot.polling { background: var(--amber); }
+.sse-dot.error   { background: var(--red); }
+
+/* ── PROMINENT CALIBRATION SAVE BUTTON ── */
+.btn-calib-main {
+  background: #0a1a0f; color: var(--green);
+  border: 1px solid var(--green);
+  font-family: var(--mono); font-size: .68rem; font-weight: 700;
+  letter-spacing: .09em; text-transform: uppercase;
+  padding: 5px 14px; cursor: pointer;
+  transition: background .15s, color .15s, box-shadow .15s;
+  white-space: nowrap;
+}
+.btn-calib-main:hover  { background: var(--green); color: #000; box-shadow: 0 0 8px var(--green); }
+.btn-calib-main:active { transform: scale(.97); }
+.btn-calib-main:disabled { opacity: .35; cursor: not-allowed; }
+.btn-calib-main.saving {
+  background: #1a1200; color: var(--amber); border-color: var(--amber);
+  animation: pulse .8s ease-in-out infinite alternate;
+}
+@keyframes pulse { from { opacity:.7; } to { opacity:1; } }
 </style>
 </head>
 <body>
 <script src="/static/monarch-nav.js"></script>
-
 <div class="terminal">
   <div class="main-area">
-    <!-- Sidebar -->
+
+    <!-- ══════════ SIDEBAR ══════════ -->
     <div class="sidebar">
       <div class="sidebar-section">
         <span class="sidebar-label">Universe</span>
         <select class="ctrl-select" id="universeSelect">
           <option>Nifty 50</option>
-          <option>F&O Stocks</option>
+          <option>F&amp;O Stocks</option>
           <option>NSE All</option>
         </select>
         <span class="sidebar-label">RSI Period</span>
@@ -123,61 +286,87 @@ tr:hover td{background:#140e00;color:var(--amber2);}
         </select>
         <span class="sidebar-label">Min Avg Volume</span>
         <input class="ctrl-input" id="minVol" type="number" value="100000" step="50000">
-        <label style="display:flex;align-items:center;gap:6px;font-size:.60rem;color:var(--muted);margin-bottom:8px">
+        <label style="display:flex;align-items:center;gap:6px;font-size:.59rem;color:var(--muted);margin-bottom:7px">
           <input type="checkbox" id="sectorCap"> Sector Cap (1 per sector)
         </label>
         <button class="btn-full" id="extractBtn" onclick="startExtraction()">▶ Extract Data</button>
-        <button class="btn-sm" onclick="refreshLive()">↺ Refresh Live Prices</button>
+        <button class="btn-sm" onclick="refreshLive.call(this,event)">↺ Refresh Live Prices</button>
+        <button class="btn-sm" onclick="window.location.href='/api/export/screener'">⬇ Export CSV</button>
         <div class="progress-bar"><div class="progress-fill" id="progressFill" style="width:0%"></div></div>
-        <div class="status-text" id="statusText">Ready</div>
+        <div class="status-text" id="statusText">Ready <span class="sse-dot" id="sseDot" title="SSE connection status"></span></div>
       </div>
 
       <div class="sidebar-section" id="mktSection">
         <span class="sidebar-label">Market Context</span>
-        <div id="mktContent"><div style="color:var(--dim);font-size:.58rem">Run extraction to load.</div></div>
+        <div id="mktContent"><div style="color:var(--dim);font-size:.57rem">Run extraction to load.</div></div>
+      </div>
+
+      <div class="sidebar-section">
+        <span class="sidebar-label">Calibration (→ DB)</span>
+        <button class="btn-sm" onclick="runCalibSnapshot()">📸 Log All Signals to DB</button>
+        <button class="btn-sm" onclick="updateForwardReturns()">↻ Update Forward Returns</button>
+        <button class="btn-sm" onclick="openCalibModal()">📊 View Calibration Stats</button>
+        <div class="flash" id="calibFlash"></div>
       </div>
 
       <div class="sidebar-section">
         <span class="sidebar-label">Navigate</span>
-        <a href="/options" style="text-decoration:none">
-          <button class="btn-sm" style="text-align:left">⚙ Options Intelligence</button></a>
-        <a href="/fundamentals" style="text-decoration:none">
-          <button class="btn-sm" style="text-align:left">📊 Fundamental Research</button></a>
-        <a href="/ml" style="text-decoration:none">
-          <button class="btn-sm" style="text-align:left">🤖 ML Predictor</button></a>
+        <a href="/options" style="text-decoration:none"><button class="btn-sm">⚙ Options Intelligence</button></a>
+        <a href="/fundamentals" style="text-decoration:none"><button class="btn-sm">📊 Fundamental Research</button></a>
+        <a href="/ml" style="text-decoration:none"><button class="btn-sm">🤖 ML Predictor</button></a>
       </div>
 
       <div class="sidebar-section" id="sectorSection" style="display:none">
-        <span class="sidebar-label">Top Sectors</span>
+        <span class="sidebar-label">Sector Returns (5D)</span>
         <div id="sectorContent"></div>
       </div>
     </div>
 
-    <!-- Main content -->
+    <!-- ══════════ MAIN CONTENT ══════════ -->
     <div class="content">
       <div class="page-title">
         <span>EQUITY SCREENER</span>
         <span id="loadingSpinner" style="display:none"><span class="spinner"></span></span>
-        <span id="rowCount" style="font-size:.60rem;color:var(--muted);font-weight:400"></span>
+        <span id="rowCount" style="font-size:.58rem;color:var(--muted);font-weight:400"></span>
+        <span style="margin-left:auto;display:flex;align-items:center;gap:8px">
+          <button class="btn-calib-main" id="logAllBtn" onclick="logAllSignalsMain()" title="Save all current screener signals to the calibration DB">
+            📸 Save Signals to DB
+          </button>
+          <span class="flash" id="logAllFlash" style="font-size:.65rem;min-width:160px"></span>
+        </span>
       </div>
 
-      <!-- Filters -->
+      <!-- Filter row -->
       <div class="filter-row">
         <input class="filter-input" id="searchInput" placeholder="Filter ticker / sector…" oninput="applyFilters()">
         <span class="filter-label">Sort:</span>
-        <select class="filter-select" id="sortSelect" onchange="loadScreener()">
+        <select class="filter-select" id="sortSelect" onchange="applyClientSort()">
           <option value="CompositeRank">Composite Rank</option>
-          <option value="Score">Total Score</option>
-          <option value="RS">RS Score</option>
+          <option value="Score">Score</option>
+          <option value="EMI">EMI</option>
+          <option value="RS">RS</option>
+          <option value="BreakoutProb">BO Prob</option>
           <option value="VCP">VCP</option>
+          <option value="BBSqueeze">BB Squeeze</option>
+          <option value="VolDryUp">Vol Dry-up</option>
           <option value="LTP">LTP</option>
+          <option value="RR">Risk:Reward</option>
         </select>
         <span class="filter-label">Horizon:</span>
         <select class="filter-select" id="horizonSelect" onchange="loadScreener()">
           <option value="ALL">All</option>
-          <option value="SHORT">Short</option>
-          <option value="MEDIUM">Medium</option>
-          <option value="LONG">Long</option>
+          <option value="Imminent BO">Imminent BO</option>
+          <option value="Intraday">Intraday</option>
+          <option value="Swing 2-5D">Swing 2-5D</option>
+          <option value="Mid 5-14D">Mid 5-14D</option>
+          <option value="Long 14-30D">Long 14-30D</option>
+        </select>
+        <span class="filter-label">Setup:</span>
+        <select class="filter-select" id="setupFilter" onchange="applyFilters()">
+          <option value="">All</option>
+          <option value="Breakout">Breakout</option>
+          <option value="Pullback">Pullback</option>
+          <option value="Reversal">Reversal</option>
         </select>
         <span class="results-count" id="visibleCount"></span>
       </div>
@@ -185,271 +374,1351 @@ tr:hover td{background:#140e00;color:var(--amber2);}
       <!-- Sector pills -->
       <div class="sector-pills" id="sectorPills"></div>
 
-      <!-- Table -->
+      <!-- ── VIEW TABS ── -->
+      <div class="view-tabs">
+        <button class="view-tab active" onclick="switchView('core')">◼ Core</button>
+        <button class="view-tab" onclick="switchView('trade')">◈ Trade</button>
+        <button class="view-tab" onclick="switchView('factor')">⬡ Factors</button>
+      </div>
+
+      <!-- Table (columns change per view) -->
       <div class="table-wrap">
         <table id="screenerTable">
-          <thead>
-            <tr>
-              <th>#</th>
-              <th onclick="sortBy('Ticker')">Ticker ↕</th>
-              <th onclick="sortBy('LTP')">LTP ↕</th>
-              <th onclick="sortBy('TotalScore')">Score ↕</th>
-              <th onclick="sortBy('CompositeRank')">CmpRank ↕</th>
-              <th onclick="sortBy('RS')">RS ↕</th>
-              <th>VCP</th>
-              <th>Horizon</th>
-              <th>Sector</th>
-              <th>Chg%</th>
-              <th>Vol</th>
-              <th>52W%</th>
-              <th>ATR%</th>
-              <th>Signals</th>
-            </tr>
-          </thead>
+          <thead id="screenerHead"><tr><th colspan="5" style="color:var(--muted);font-weight:400">Run extraction to populate the screener.</th></tr></thead>
           <tbody id="screenerBody">
-            <tr><td colspan="14" class="empty-state">Run extraction to populate the screener.</td></tr>
+            <tr><td colspan="5" class="empty-state">Run extraction to populate the screener.</td></tr>
           </tbody>
         </table>
       </div>
+    </div><!-- /content -->
+  </div><!-- /main-area -->
+</div><!-- /terminal -->
+
+<!-- ══════════ STOCK DETAIL MODAL ══════════ -->
+<div class="modal-overlay" id="stockModal" onclick="closeModalOutside(event)">
+  <div class="modal">
+    <div class="modal-header">
+      <div>
+        <div class="modal-title" id="modalTitle">—</div>
+        <div id="modalMeta" style="color:var(--muted);font-size:.59rem;margin-top:2px"></div>
+      </div>
+      <div style="display:flex;gap:8px;align-items:center">
+        <div class="quick-links" id="quickLinks"></div>
+        <button class="modal-close" onclick="closeModal()">✕ Close</button>
+      </div>
+    </div>
+    <div class="modal-tabs">
+      <button class="modal-tab active" onclick="switchTab('overview')">Overview</button>
+      <button class="modal-tab" onclick="switchTab('chart')">Chart</button>
+      <button class="modal-tab" onclick="switchTab('explain')">Score Breakdown</button>
+      <button class="modal-tab" onclick="switchTab('trade')">Trade Setup</button>
+      <button class="modal-tab" onclick="switchTab('news')">News</button>
+      <button class="modal-tab" onclick="switchTab('watchlist')">Watchlist</button>
+      <button class="modal-tab" onclick="switchTab('calib')">Calibration</button>
+    </div>
+    <div class="modal-panel active" id="mp-overview"><div id="overviewContent"><div class="empty-state"><span class="spinner"></span></div></div></div>
+    <div class="modal-panel" id="mp-chart"><div id="chartContent"><div class="empty-state">Click Chart tab to load.</div></div></div>
+    <div class="modal-panel" id="mp-explain"><div id="explainContent"><div class="empty-state"><span class="spinner"></span></div></div></div>
+    <div class="modal-panel" id="mp-trade"><div id="tradeContent"><div class="empty-state"><span class="spinner"></span></div></div></div>
+    <div class="modal-panel" id="mp-news"><div id="newsContent"><div class="empty-state">Click News tab to load.</div></div></div>
+    <div class="modal-panel" id="mp-watchlist"><div id="watchlistContent"><div class="empty-state"><span class="spinner"></span></div></div></div>
+    <div class="modal-panel" id="mp-calib"><div id="calibContent"><div class="empty-state"><span class="spinner"></span></div></div></div>
+  </div>
+</div>
+
+<!-- ══════════ CALIBRATION STATS MODAL ══════════ -->
+<div class="modal-overlay" id="calibModal" onclick="if(event.target===this)this.classList.remove('open')">
+  <div class="modal" style="max-width:680px">
+    <div class="modal-header">
+      <div class="modal-title">Calibration DB Stats</div>
+      <button class="modal-close" onclick="document.getElementById('calibModal').classList.remove('open')">✕ Close</button>
+    </div>
+    <div class="modal-panel active" id="calibStatsContent" style="display:block">
+      <div class="empty-state"><span class="spinner"></span></div>
     </div>
   </div>
 </div>
 
 <script>
-let _rows = [];
-let _filteredRows = [];
-let _sortCol = 'CompositeRank';
-let _sortAsc = false;
-let _sectorFilter = '';
-let _pollInterval = null;
+// ════════════════════════════════════════════════════
+// DISPLAY THRESHOLDS — single source of truth.
+// Mirror ScoreConfig where possible; UI-only ones are
+// defined here. Change once, updates everywhere.
+// ════════════════════════════════════════════════════
+const THRESH = {
+  RSI_OVERBOUGHT:   70,   // RSI ≥ this → red (overbought)
+  RSI_HIGH:         60,   // RSI ≥ this → amber (elevated)
+  RSI_OVERSOLD:     35,   // RSI ≤ this → blue (oversold)
+  VOL_RATIO_HIGH:   1.5,  // VolRatio ≥ this → green
+  VOL_RATIO_MID:    1.0,  // VolRatio ≥ this → amber
+  VOL_Z_SURGE:       3,   // VolZ ≥ this → bright green
+  VOL_Z_HIGH:        2,   // VolZ ≥ this → green
+  VOL_Z_ELEVATED:    1,   // VolZ ≥ this → amber2
+  VOL_Z_WEAK:       -1,   // VolZ ≤ this → blue
+  BO_PCT_HIGH:      60,   // BreakoutProb% ≥ this → green
+  BO_PCT_MID:       40,   // BreakoutProb% ≥ this → amber
+  POS52W_HIGH:      70,   // 52W position% ≥ this → green
+  POS52W_MID:       40,   // 52W position% ≥ this → amber
+  STAB_HIGH:       0.6,   // Stability ≥ this → green
+  STAB_LOW:        0.4,   // Stability < this → red
+  WIN_RATE_GOOD:    55,   // Calibration win rate ≥ → green
+  WIN_RATE_MID:     45,   // Calibration win rate ≥ → amber
+  PENALTY_HIGH:      8,   // SoftPenalty > this → red
+  PENALTY_MID:       4,   // SoftPenalty > this → amber
+  RR_PREMIUM:     1.25,   // rrFmt: ratio vs median for green (25% above)
+  RR_DISCOUNT:    0.85,   // rrFmt: ratio vs median for amber (15% below)
+};
 
-// ── Extraction ────────────────────────────────────────────────────────────────
-async function startExtraction() {
-  const btn = document.getElementById('extractBtn');
-  btn.disabled = true; btn.textContent = '⟳ Extracting…';
-  document.getElementById('statusText').textContent = 'Starting…';
-  try {
-    const r = await fetch('/api/extract', {
-      method: 'POST',
-      headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({
-        universe: document.getElementById('universeSelect').value,
-        rsi_period: parseInt(document.getElementById('rsiPeriod').value),
-        min_avg_vol: parseInt(document.getElementById('minVol').value),
-        sector_cap_enabled: document.getElementById('sectorCap').checked,
-      })
-    });
-    const d = await r.json();
-    if (d.status === 'started') {
-      startPolling();
-    } else if (d.status === 'already_running') {
-      document.getElementById('statusText').textContent = 'Already running…';
-      startPolling();
-    }
-  } catch(e) {
-    document.getElementById('statusText').textContent = 'Error: ' + e.message;
-    btn.disabled = false; btn.textContent = '▶ Extract Data';
-  }
-}
 
-function startPolling() {
-  if (_pollInterval) clearInterval(_pollInterval);
-  _pollInterval = setInterval(async () => {
-    try {
-      const r = await fetch('/api/extraction/status');
-      const s = await r.json();
-      const pct = s.total > 0 ? Math.round(s.done / s.total * 100) : 0;
-      document.getElementById('progressFill').style.width = pct + '%';
-      document.getElementById('statusText').textContent =
-        s.running ? `${s.done}/${s.total} (${s.errors} err, ${s.rate_limited} RL)` :
-        `Done: ${s.done}/${s.total}`;
-      if (!s.running && s.done > 0) {
-        clearInterval(_pollInterval);
-        document.getElementById('extractBtn').disabled = false;
-        document.getElementById('extractBtn').textContent = '▶ Extract Data';
-        loadScreener();
-      }
-    } catch(e) {}
-  }, 2000);
-}
+let _rows = [], _filteredRows = [], _sortCol = 'CompositeRank', _sortAsc = false;
+let _sectorFilter = '', _pollInterval = null;
+let _currentStock = null, _chartLoaded = false, _newsLoaded = false, _wlLoaded = false, _calibLoaded = false;
+let _currentView = 'core';  // 'core' | 'trade' | 'factor'
+let STATE_extraction_running = false; // tracks whether extraction is in progress for SSE fallback logic
 
-async function refreshLive() {
-  await fetch('/api/refresh_live', {method:'POST'});
-  setTimeout(loadScreener, 3000);
-}
+// Score percentile thresholds — computed LIVE from actual data, never hardcoded.
+// Updated every time loadScreener() receives a response.
+let _sP75 = 70, _sP50 = 50, _sP25 = 35;
 
-// ── Screener load ─────────────────────────────────────────────────────────────
-async function loadScreener() {
-  const sort = document.getElementById('sortSelect').value;
-  const horizon = document.getElementById('horizonSelect').value;
-  document.getElementById('loadingSpinner').style.display = '';
-  try {
-    const r = await fetch(`/api/screener?sort_by=${sort}&horizon=${horizon}`);
-    const d = await r.json();
-    _rows = d.rows || [];
-    renderMarketContext(d);
-    renderSectorPills(d.top_sectors || []);
-    applyFilters();
-  } catch(e) {
-    console.error(e);
-  }
-  document.getElementById('loadingSpinner').style.display = 'none';
-}
+// RR median — computed live from filtered rows. Never hardcoded.
+let _rrMedian = 2.0;
 
-function renderMarketContext(d) {
-  const regime = d.regime || 'BULL';
-  const vix = d.vix != null ? d.vix.toFixed(1) : '—';
-  const regimeClr = regime === 'BULL' ? 'bull' : regime === 'BEAR' ? 'bear' : 'neu';
-  const rows = [
-    ['Regime', `<span class="${regimeClr}">${regime}</span>`],
-    ['VIX', vix],
-    ['Mkt OK', d.market_ok ? '<span class="bull">YES</span>' : '<span class="bear">NO</span>'],
-    ['N50>50DMA', d.nifty_above_50dma ? '<span class="bull">YES</span>' : '<span class="bear">NO</span>'],
-    ['VIX↓', d.vix_falling ? '<span class="bull">YES</span>' : '<span class="bear">NO</span>'],
-    ['Stocks', d.total || 0],
-    ['LiveQ', d.live_quotes || 0],
-  ];
-  document.getElementById('mktContent').innerHTML = rows.map(([k,v]) =>
-    `<div class="mkt-row"><span class="mkt-key">${k}</span><span class="mkt-val">${v}</span></div>`
-  ).join('');
+// ── COLUMN DEFINITIONS ──────────────────────────────────────────
+// Each column: { key, label, fmt, align, tip }
+// fmt: function(row) → string (may include HTML)
+// align: 'L' | 'R'
+// Derived from main.py ScoreConfig + aggregate_score return keys.
 
-  // Sector returns in sidebar
-  if (d.sector_returns && Object.keys(d.sector_returns).length) {
-    const sec = document.getElementById('sectorSection');
-    sec.style.display = '';
-    const sorted = Object.entries(d.sector_returns).sort((a,b) => b[1]-a[1]).slice(0,8);
-    document.getElementById('sectorContent').innerHTML = sorted.map(([k,v]) =>
-      `<div class="mkt-row"><span class="mkt-key">${k}</span><span class="mkt-val ${v>0?'bull':'bear'}">${v>0?'+':''}${v.toFixed(1)}%</span></div>`
-    ).join('');
-  }
-}
+const COLS = {
+  // Identity
+  Rank:        { label:'#',          fmt: r => r.Rank ?? '—',                              align:'L' },
+  Ticker:      { label:'Ticker',     fmt: r => tickerCell(r),                               align:'L' },
+  Sector:      { label:'Sector',     fmt: r => `<span style="color:var(--dim)">${r.Sector||'—'}</span>`, align:'L' },
+  SetupType:   { label:'Setup',      fmt: r => setupBadge(r.SetupType),                    align:'L' },
+  Horizon:     { label:'Horizon',    fmt: r => horizonBadge(r.Horizon),                    align:'L' },
+  // Core scores
+  Score:       { label:'Score',      fmt: r => `<span class="score-cell" style="color:${sc(r.Score)}">${fv(r.Score,1)}</span>`, align:'R' },
+  EMI:         { label:'EMI',        fmt: r => `<span style="color:var(--amber2)">${fv(r.EMI,3)}</span>`, align:'R' },
+  CompositeRank:{ label:'CmpRnk',   fmt: r => `<span style="color:var(--muted)">${fv(r.CompositeRank,4)}</span>`, align:'R' },
+  // Price
+  LTP:         { label:'LTP',        fmt: r => `<span style="color:var(--white);font-weight:600">₹${fv(r.LTP,2)}</span>`, align:'R' },
+  DayChg_pct:  { label:'Chg%',      fmt: r => chgFmt(r.DayChg_pct),                       align:'R' },
+  DayHigh:     { label:'D.High',    fmt: r => r.DayHigh != null ? `₹${fv(r.DayHigh,2)}` : '—', align:'R' },
+  DayLow:      { label:'D.Low',     fmt: r => r.DayLow  != null ? `₹${fv(r.DayLow,2)}`  : '—', align:'R' },
+  LiveVol:     { label:'Vol',        fmt: r => fmtVol(r.LiveVol),                          align:'R' },
+  // Relative strength
+  RS:          { label:'RS',         fmt: r => csFmt(r.RS),                                align:'R' },
+  RS_Sector:   { label:'RS Sect',   fmt: r => `${fv(r.RS_Sector,1)}`,                     align:'R' },
+  CSRank5d:    { label:'CS5d',       fmt: r => `${fv((r.CSRank5d??0)*100,1)}%`,            align:'R' },
+  AbsRS:       { label:'AbsRS',      fmt: r => `${fv(r.AbsRS,3)}`,                         align:'R' },
+  RSDivergence:{ label:'RS Div',    fmt: r => fv(r.RSDivergence,1),                        align:'R' },
+  RS_Accel:    { label:'RS Acc',    fmt: r => fv(r.RS_Accel,2),                            align:'R' },
+  AccelScore:  { label:'Accel%',    fmt: r => `${fv(r.AccelScore,1)}%`,                    align:'R' },
+  // Breakout metrics
+  BreakoutProb:{ label:'BO%',        fmt: r => boPctFmt(r.BreakoutProb),                   align:'R' },
+  SignalPersist:{ label:'SigCov',    fmt: r => r.SignalPersist != null ? `${fv(r.SignalPersist*100,0)}%` : '—', align:'R' },
+  // Volume
+  VolRatio:    { label:'VolRat',    fmt: r => volRatFmt(r.VolRatio),                       align:'R' },
+  VolZ:        { label:'VolZ',       fmt: r => volZFmt(r.VolZ),                            align:'R' },
+  InstRatio:   { label:'InstRat',   fmt: r => `${fv(r.InstRatio,2)}x`,                    align:'R' },
+  UpVolSkew:   { label:'↑VolSkw',  fmt: r => fv(r.UpVolSkew,1),                           align:'R' },
+  // Technicals
+  RSI7:        { label:'RSI',        fmt: r => rsiFmt(r.RSI7),                             align:'R' },
+  'ATR%':      { label:'ATR%',       fmt: r => r['ATR%'] != null ? `${fv(r['ATR%'],2)}%` : '—', align:'R' },
+  'VC_Ratio':  { label:'VC Rat',    fmt: r => `${fv(r['VC_Ratio'],2)}`,                   align:'R' },
+  Pos52W:      { label:'52W%',       fmt: r => pos52Fmt(r.Pos52W),                        align:'R' },
+  AboveSMA200: { label:'SMA200',    fmt: r => r.AboveSMA200 ? '<span style="color:var(--green)">✔</span>' : '<span style="color:var(--dim)">—</span>', align:'R' },
+  Stability:   { label:'Stab',       fmt: r => stabFmt(r.Stability),                       align:'R' },
+  // Component scores (from ScoreConfig weights)
+  Volume:      { label:'Volume',    fmt: r => barFmt(r.Volume, 15),                        align:'R' },
+  InstVol:     { label:'InstVol',   fmt: r => barFmt(r.InstVol, 10),                       align:'R' },
+  VolCont:     { label:'VolCont',   fmt: r => barFmt(r.VolCont, 10),                       align:'R' },
+  RCI:         { label:'RCI',        fmt: r => fv(r.RCI, 3),                               align:'R' },
+  BBSqueeze:   { label:'BB Sqz',    fmt: r => barFmt(r.BBSqueeze, 8),                      align:'R' },
+  VolDryUp:    { label:'VolDry',    fmt: r => barFmt(r.VolDryUp, 8),                       align:'R' },
+  CLVAccum:    { label:'CLV',        fmt: r => barFmt(r.CLVAccum, 8),                      align:'R' },
+  VCP:         { label:'VCP',        fmt: r => barFmt(r.VCP, 10),                          align:'R' },
+  SpreadPts:   { label:'Spread',    fmt: r => barFmt(r.SpreadPts, 11),                     align:'R' },
+  Coil:        { label:'Coil',       fmt: r => barFmt(r.Coil, 10),                         align:'R' },
+  MA_Struct:   { label:'MA',         fmt: r => barFmt(r.MA_Struct, 10),                    align:'R' },
+  Proximity:   { label:'Prox',       fmt: r => barFmt(r.Proximity, 10),                    align:'R' },
+  ATR_Pot:     { label:'ATRPot',    fmt: r => barFmt(r.ATR_Pot, 5),                        align:'R' },
+  Candle:      { label:'Candle',    fmt: r => barFmt(r.Candle, 5),                         align:'R' },
+  Darvas:      { label:'Darvas',    fmt: r => barFmt(r.Darvas, 10),                        align:'R' },
+  VCVE:        { label:'VCVE',       fmt: r => fv(r.VCVE, 3),                              align:'R' },
+  // VCP detail
+  VCP_Detected:   { label:'VCP✔',   fmt: r => r.VCP_Detected ? '<span style="color:var(--green)">YES</span>' : '<span style="color:var(--dim)">NO</span>', align:'R' },
+  VCP_Pullbacks:  { label:'VCP PBs', fmt: r => r.VCP_Pullbacks ?? '—',                    align:'R' },
+  VCP_Contraction:{ label:'VCP Cont',fmt: r => fv(r.VCP_Contraction, 3),                  align:'R' },
+  VCP_VolComp:    { label:'VCP VC',  fmt: r => fv(r.VCP_VolComp, 3),                      align:'R' },
+  VCP_VolDryup:   { label:'VCP VD',  fmt: r => fv(r.VCP_VolDryup, 3),                     align:'R' },
+  VCP_Tightness:  { label:'VCP Tgt', fmt: r => fv(r.VCP_Tightness, 3),                    align:'R' },
+  VCP_Position:   { label:'VCP Pos', fmt: r => fv(r.VCP_Position, 3),                     align:'R' },
+  // Darvas
+  DarvasInBox: { label:'Darvas',    fmt: r => r.DarvasInBox ? '<span style="color:var(--green)">IN BOX</span>' : '<span style="color:var(--dim)">—</span>', align:'R' },
+  // Bonus signals
+  CPR:         { label:'CPR',        fmt: r => fv(r.CPR, 1),                              align:'R' },
+  ATRExpOnset: { label:'ATRExp',    fmt: r => fv(r.ATRExpOnset, 1),                       align:'R' },
+  OI_Buildup:  { label:'OI Bld',   fmt: r => r.OI_Buildup > 0 ? `<span style="color:var(--blue)">${fv(r.OI_Buildup,1)}</span>` : '—', align:'R' },
+  VolVelocity: { label:'VolVel',   fmt: r => fv(r.VolVelocity, 1),                        align:'R' },
+  Sweep:       { label:'Sweep',     fmt: r => r.Sweep ? '<span style="color:var(--cyan)">✔</span>' : '—', align:'R' },
+  VWMA20_OK:   { label:'VWAP↑',    fmt: r => r.VWMA20_OK ? '<span style="color:var(--green)">✔</span>' : '—', align:'R' },
+  // Trade
+  Entry:       { label:'Entry',     fmt: r => r.Entry  != null ? `<span style="color:var(--amber)">₹${fv(r.Entry,2)}</span>`  : '—', align:'R' },
+  Target:      { label:'Target',    fmt: r => r.Target != null ? `<span style="color:var(--green)">₹${fv(r.Target,2)}</span>` : '—', align:'R' },
+  Stop:        { label:'Stop',      fmt: r => r.Stop   != null ? `<span style="color:var(--red)">₹${fv(r.Stop,2)}</span>`    : '—', align:'R' },
+  RR:          { label:'RR',        fmt: r => rrFmt(r.RR),                                align:'R' },
+  'Move%':     { label:'Move%',     fmt: r => r['Move%'] != null ? `${fv(r['Move%'],1)}%` : '—', align:'R' },
+  KellyFrac:   { label:'Kelly%',   fmt: r => r.KellyFrac != null ? `${fv(r.KellyFrac*100,1)}%` : '—', align:'R' },
+  // Misc
+  Patterns:    { label:'Candles',   fmt: r => `<span style="color:var(--amber2);font-size:.56rem">${r.Patterns||'—'}</span>`, align:'L' },
+  SoftPenalty: { label:'Penalty',   fmt: r => r.SoftPenalty != null ? `<span style="color:${r.SoftPenalty>THRESH.PENALTY_HIGH?'var(--red)':r.SoftPenalty>THRESH.PENALTY_MID?'var(--amber)':'var(--dim)'}">-${fv(r.SoftPenalty,1)}</span>` : '—', align:'R' },
+  BasePos:     { label:'Base%',     fmt: r => r.BasePos != null ? `${fv(r.BasePos*100,1)}%` : '—', align:'R' },
+  LiquidityScore:{ label:'Liq',    fmt: r => r.LiquidityScore != null ? fv(r.LiquidityScore,3) : '—', align:'R' },
+  ADVTurnover: { label:'ADV(Cr)',   fmt: r => r.ADVTurnover != null ? `₹${fv(r.ADVTurnover,1)}Cr` : '—', align:'R' },
+  Signals:     { label:'Signals',   fmt: r => signalDots(r),                              align:'R' },
+  EMA9:        { label:'EMA9',      fmt: r => r.EMA9  != null ? `₹${fv(r.EMA9,2)}`  : '—', align:'R' },
+  EMA20:       { label:'EMA20',     fmt: r => r.EMA20 != null ? `₹${fv(r.EMA20,2)}` : '—', align:'R' },
+  HorizonNote: { label:'Note',      fmt: r => `<span style="color:var(--muted);font-size:.57rem;white-space:normal;max-width:220px;display:inline-block">${r.HorizonNote||'—'}</span>`, align:'L' },
+};
 
-function renderSectorPills(topSectors) {
-  const sectors = [...new Set(_rows.map(r => r.Sector).filter(Boolean))].sort();
-  const pills = document.getElementById('sectorPills');
-  pills.innerHTML = `<span class="sector-pill ${!_sectorFilter?'active':''}" onclick="filterSector('')">ALL</span>` +
-    sectors.map(s => `<span class="sector-pill ${_sectorFilter===s?'active':''}" onclick="filterSector('${s}')">${s}</span>`).join('');
-}
+// ── VIEW COLUMN SETS ─────────────────────────────────────────────
+// Mirrors the screener's CORE_COLS, TRADE_COLS, FACTOR_COLS exactly.
+const VIEW_COLS = {
+  core: [
+    'Rank','Ticker','Sector','SetupType','Horizon','Score','EMI','CompositeRank',
+    'LTP','DayChg_pct','LiveVol','RSI7','ATR%','RR',
+    'RS','CSRank5d','RS_Sector','MA_Struct',
+    'VolCont','BBSqueeze','VolDryUp','CLVAccum','VCP','BreakoutProb','SignalPersist',
+    'Proximity','Candle','Patterns',
+    'UpVolSkew','CPR','SpreadPts','ATRExpOnset','OI_Buildup','VolVelocity','RSDivergence',
+  ],
+  trade: [
+    'Rank','Ticker','Sector','SetupType','Horizon','Score','EMI',
+    'LTP','Entry','Target','Stop','RR','Move%','KellyFrac','ATR%',
+    'RSI7','VolRatio','VolZ',
+    'BBSqueeze','VolDryUp','CLVAccum','VCP','VCP_Detected','BreakoutProb',
+    'UpVolSkew','CPR','SpreadPts','ATRExpOnset','OI_Buildup','RSDivergence',
+    'Sweep','VWMA20_OK','Stability','HorizonNote',
+  ],
+  factor: [
+    'Rank','Ticker','Sector','SetupType','Score',
+    'RS','RS_Sector','Volume','InstVol','VolCont','RCI',
+    'BBSqueeze','VolDryUp','CLVAccum',
+    'VCP','VCP_Contraction','VCP_VolComp','VCP_VolDryup','VCP_Tightness','VCP_Position',
+    'Coil','MA_Struct','Proximity','ATR_Pot','Candle','Darvas','VCVE','BasePos',
+    'UpVolSkew','CPR','SpreadPts','ATRExpOnset','OI_Buildup','VolVelocity','RSDivergence',
+    'SoftPenalty','LiquidityScore','ADVTurnover','SignalPersist','Stability',
+    'AboveSMA200','Pos52W','EMA9','EMA20','DarvasInBox',
+    'RS_Accel','AccelScore',
+    'Sweep','VWMA20_OK','Patterns',
+  ],
+};
 
-function filterSector(s) {
-  _sectorFilter = s;
-  document.querySelectorAll('.sector-pill').forEach(p => {
-    p.classList.toggle('active', p.textContent === (s||'ALL'));
-  });
-  applyFilters();
-}
+// Factor max-points map — derived from main.py ScoreConfig.
+// Weights × 100 = max points for each component.
+// W_RS=0.18→18 but api returns RS already as pts (rs_combined*18),
+// so we match what aggregate_score actually puts in each field.
+const FM = {
+  RS:15, RS_Sector:10, Volume:15, InstVol:10, VolCont:10,
+  Coil:10, MA_Struct:10, Proximity:10, ATR_Pot:5, Candle:5,
+  BBSqueeze:8, VolDryUp:8, CLVAccum:8, VCP:10, SpreadPts:11, Darvas:10,
+};
 
-function applyFilters() {
-  const q = document.getElementById('searchInput').value.toLowerCase();
-  _filteredRows = _rows.filter(r => {
-    const matchQ = !q || (r.Ticker||'').toLowerCase().includes(q) || (r.Sector||'').toLowerCase().includes(q);
-    const matchS = !_sectorFilter || r.Sector === _sectorFilter;
-    return matchQ && matchS;
-  });
-  document.getElementById('visibleCount').textContent = `${_filteredRows.length} stocks`;
-  document.getElementById('rowCount').textContent = `(${_rows.length} total)`;
-  renderTable(_filteredRows);
-}
-
-function sortBy(col) {
-  // Map UI column names to API field names
-  const fieldMap = { TotalScore: 'Score', RS_Score: 'RS' };
-  const apiCol = fieldMap[col] || col;
-  if (_sortCol === apiCol) _sortAsc = !_sortAsc;
-  else { _sortCol = apiCol; _sortAsc = false; }
-  _filteredRows.sort((a,b) => {
-    const av = a[apiCol], bv = b[apiCol];
-    if (av == null) return 1; if (bv == null) return -1;
-    return _sortAsc ? (av > bv ? 1 : -1) : (bv > av ? 1 : -1);
-  });
-  renderTable(_filteredRows);
-}
-
+// ════════════════════════════════════════════════════
+// FORMAT HELPERS (all data-driven, no hardcoded thresholds)
+// ════════════════════════════════════════════════════
 function fv(v, dec=1) {
-  if (v == null || v === '' || isNaN(parseFloat(v))) return '—';
+  if (v == null || v === '' || (typeof v === 'number' && isNaN(v))) return '—';
   return parseFloat(v).toFixed(dec);
 }
-function clr(v) {
-  if (v == null) return '';
-  return parseFloat(v) > 0 ? 'style="color:var(--green)"' : parseFloat(v) < 0 ? 'style="color:var(--red)"' : '';
+function chgFmt(v) {
+  if (v == null) return '—';
+  const c = v > 0 ? 'var(--green)' : v < 0 ? 'var(--red)' : 'var(--muted)';
+  return `<span style="color:${c}">${v > 0 ? '+' : ''}${fv(v,2)}%</span>`;
+}
+function csFmt(v) {
+  if (v == null) return '—';
+  const c = parseFloat(v) > 0 ? 'var(--green)' : parseFloat(v) < 0 ? 'var(--red)' : 'var(--muted)';
+  return `<span style="color:${c}">${fv(v,1)}</span>`;
 }
 function fmtVol(v) {
   if (!v) return '—';
   if (v >= 1e7) return (v/1e7).toFixed(1) + 'Cr';
   if (v >= 1e5) return (v/1e5).toFixed(1) + 'L';
-  return Math.round(v).toLocaleString();
+  return Math.round(v).toLocaleString('en-IN');
+}
+// Score colour — uses live distribution percentiles. Never a hardcoded absolute.
+function sc(v) {
+  if (v == null) return 'var(--muted)';
+  if (v >= _sP75) return 'var(--green)';
+  if (v >= _sP50) return 'var(--amber2)';
+  if (v >= _sP25) return 'var(--amber)';
+  return 'var(--dim)';
+}
+// RR colour — relative to live universe median. Never a hardcoded absolute.
+function rrFmt(v) {
+  if (v == null) return '—';
+  const c = v >= _rrMedian * THRESH.RR_PREMIUM  ? 'var(--green)'
+          : v >= _rrMedian * THRESH.RR_DISCOUNT  ? 'var(--amber)'
+          : 'var(--red)';
+  return `<span style="color:${c}">${fv(v,2)}x</span>`;
+}
+function rsiFmt(v) {
+  if (v == null) return '—';
+  const c = v >= THRESH.RSI_OVERBOUGHT ? 'var(--red)'
+          : v >= THRESH.RSI_HIGH       ? 'var(--amber)'
+          : v <= THRESH.RSI_OVERSOLD   ? 'var(--blue)'
+          : 'var(--green)';
+  return `<span style="color:${c}">${fv(v,1)}</span>`;
+}
+function volRatFmt(v) {
+  if (v == null) return '—';
+  const c = v >= THRESH.VOL_RATIO_HIGH ? 'var(--green)'
+          : v >= THRESH.VOL_RATIO_MID  ? 'var(--amber)'
+          : 'var(--dim)';
+  return `<span style="color:${c}">${fv(v,2)}x</span>`;
+}
+function volZFmt(v) {
+  if (v == null) return '—';
+  const c = v >= THRESH.VOL_Z_SURGE    ? 'var(--green2)'
+          : v >= THRESH.VOL_Z_HIGH     ? 'var(--green)'
+          : v >= THRESH.VOL_Z_ELEVATED ? 'var(--amber2)'
+          : v <= THRESH.VOL_Z_WEAK     ? 'var(--blue)'
+          : 'var(--dim)';
+  return `<span style="color:${c}">${fv(v,2)}</span>`;
+}
+function boPctFmt(v) {
+  if (v == null) return '—';
+  const pct = v * 100;
+  const c = pct >= THRESH.BO_PCT_HIGH ? 'var(--green)'
+          : pct >= THRESH.BO_PCT_MID  ? 'var(--amber)'
+          : 'var(--dim)';
+  return `<span style="color:${c}">${fv(pct,0)}%</span>`;
+}
+function pos52Fmt(v) {
+  if (v == null) return '—';
+  const pct = v * 100;
+  const c = pct >= THRESH.POS52W_HIGH ? 'var(--green)'
+          : pct >= THRESH.POS52W_MID  ? 'var(--amber)'
+          : 'var(--dim)';
+  return `<span style="color:${c}">${fv(pct,1)}%</span>`;
+}
+function stabFmt(v) {
+  if (v == null) return '—';
+  const c = v >= THRESH.STAB_HIGH ? 'var(--green)'
+          : v <  THRESH.STAB_LOW  ? 'var(--red)'
+          : 'var(--amber)';
+  return `<span style="color:${c}">${fv(v,2)}</span>`;
+}
+// barFmt: coloured value with its max denominator (shows e.g. "7.2/10")
+function barFmt(v, max) {
+  if (v == null) return '—';
+  const pct = Math.min((parseFloat(v) / max) * 100, 100);
+  const c = pct >= 60 ? 'var(--green)' : pct >= 30 ? 'var(--amber)' : 'var(--red)';
+  return `<span style="color:${c}">${fv(v,1)}</span><span style="color:var(--dim);font-size:.54rem">/${max}</span>`;
+}
+function setupBadge(v) {
+  if (!v) return '—';
+  const map = { Breakout:'var(--blue)', Pullback:'var(--purple)', Reversal:'var(--amber)' };
+  return `<span style="color:${map[v]||'var(--muted)'};font-size:.58rem;font-weight:700">${v}</span>`;
+}
+function horizonBadge(v) {
+  if (!v) return '—';
+  const map = {
+    'Imminent BO': 'var(--green2)',
+    'Intraday':    'var(--cyan)',
+    'Swing 2-5D':  'var(--amber2)',
+    'Mid 5-14D':   'var(--amber)',
+    'Long 14-30D': 'var(--dim)',
+  };
+  const c = Object.entries(map).find(([k]) => v.includes(k.split(' ')[0]))?.[1] || 'var(--muted)';
+  return `<span style="color:${c};font-size:.58rem">${v}</span>`;
+}
+function tickerCell(r) {
+  const tags = [
+    r.VCP_Detected ? '<span class="tag tag-vcp">VCP</span>' : '',
+    r.DarvasInBox  ? '<span class="tag tag-bo">BO</span>'   : '',
+    r.OI_Buildup > 0 ? '<span class="tag tag-oi">OI</span>' : '',
+    r.Sweep        ? '<span class="tag tag-rev">SW</span>'  : '',
+  ].join('');
+  return `<span class="ticker-cell" data-ticker="${(r.Ticker||'').replace(/"/g,'')}">${r.Ticker}${tags}</span>`;
+}
+function signalDots(r) {
+  return [
+    { t:'UpVolSkew',    v: r.UpVolSkew > 0 },
+    { t:'BBSqueeze',    v: r.BBSqueeze > 0 },
+    { t:'CLVAccum',     v: r.CLVAccum  > 0 },
+    { t:'RSDivergence', v: r.RSDivergence > 0 },
+    { t:'VCP_Detected', v: r.VCP_Detected },
+  ].map(d => `<span class="sig ${d.v ? 'sig-g' : 'sig-n'}" title="${d.t}"></span>`).join('');
 }
 
+// ════════════════════════════════════════════════════
+// EXTRACTION
+// ════════════════════════════════════════════════════
+async function startExtraction() {
+  const btn = document.getElementById('extractBtn');
+  btn.disabled = true; btn.textContent = '⟳ Extracting…';
+  document.getElementById('statusText').textContent = 'Starting…';
+  STATE_extraction_running = true;
+  try {
+    const d = await fetch('/api/extract', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        universe:           document.getElementById('universeSelect').value,
+        rsi_period:         parseInt(document.getElementById('rsiPeriod').value),
+        min_avg_vol:        parseInt(document.getElementById('minVol').value),
+        sector_cap_enabled: document.getElementById('sectorCap').checked,
+      })
+    }).then(r => r.json());
+    if (d.status === 'started' || d.status === 'already_running') startPolling();
+  } catch(e) {
+    STATE_extraction_running = false;
+    document.getElementById('statusText').textContent = 'Error: ' + e.message;
+    btn.disabled = false; btn.textContent = '▶ Extract Data';
+  }
+}
+function startPolling() {
+  // SSE preferred; fall back to interval polling if EventSource unavailable
+  if (typeof EventSource !== 'undefined') {
+    _startSSE();
+  } else {
+    _startIntervalPoll();
+  }
+}
+
+// ── SSE connection ────────────────────────────────────────────────
+let _sse = null;
+function _startSSE() {
+  if (_sse) { _sse.close(); _sse = null; }
+  const dot = document.getElementById('sseDot');
+  if (dot) dot.className = 'sse-dot polling';
+
+  _sse = new EventSource('/api/extraction/stream');
+
+  _sse.addEventListener('open', () => {
+    if (dot) dot.className = 'sse-dot live';
+  });
+
+  _sse.addEventListener('status', e => {
+    try {
+      const s = JSON.parse(e.data);
+      _handleExtractionStatus(s);
+    } catch(_) {}
+  });
+
+  // Progressive row streaming — each scored stock arrives as it's processed
+  // during extraction. We upsert it into _rows and re-render the table
+  // immediately so the user sees stocks appearing one-by-one rather than
+  // waiting for the full batch to complete.
+  _sse.addEventListener('row', e => {
+    try {
+      const row = JSON.parse(e.data);
+      if (!row.Ticker) return;
+      const idx = _rows.findIndex(r => r.Ticker === row.Ticker);
+      if (idx >= 0) {
+        _rows[idx] = row; // update existing
+      } else {
+        _rows.push(row);  // new arrival
+      }
+      // Recompute score percentiles incrementally
+      if (_rows.length >= 4) {
+        const s = _rows.map(r => r.Score).filter(v => v != null).sort((a,b) => a - b);
+        const n = s.length;
+        _sP75 = s[Math.floor(n * 0.75)] ?? 70;
+        _sP50 = s[Math.floor(n * 0.50)] ?? 50;
+        _sP25 = s[Math.floor(n * 0.25)] ?? 35;
+      }
+      // Re-sort by current column and re-render — throttled so we don't
+      // hammer the DOM on every single arriving row (batches naturally
+      // because the SSE loop runs at 300 ms intervals server-side).
+      _scheduleRender();
+    } catch(_) {}
+  });
+
+  // rescore_complete fires after compute_cs_ranks() finishes with the full
+  // universe. Trigger one final loadScreener() to replace provisional scores
+  // with accurate cross-sectional RS percentile ranks.
+  _sse.addEventListener('rescore_complete', () => {
+    loadScreener();
+  });
+
+  // Also listen for live-price push events from the server
+  _sse.addEventListener('prices', e => {
+    try {
+      const updated = JSON.parse(e.data);   // { TICKER: { ltp, chg, vol }, … }
+      _applyLivePricePatch(updated);
+    } catch(_) {}
+  });
+
+  _sse.addEventListener('error', () => {
+    if (dot) dot.className = 'sse-dot error';
+    _sse.close(); _sse = null;
+    // Graceful fallback: only start interval polling if extraction is actually running
+    // — no point hammering the server when we just need live prices via SSE
+    setTimeout(() => {
+      if (!_pollInterval && STATE_extraction_running) _startIntervalPoll();
+      // Try to reconnect SSE after a backoff
+      setTimeout(_startSSE, 15_000);
+    }, 3000);
+  });
+}
+
+function _startIntervalPoll() {
+  if (_pollInterval) clearInterval(_pollInterval);
+  const dot = document.getElementById('sseDot');
+  if (dot) dot.className = 'sse-dot polling';
+  _pollInterval = setInterval(async () => {
+    try {
+      const s = await fetch('/api/extraction/status').then(r => r.json());
+      _handleExtractionStatus(s);
+    } catch(e) {}
+  }, 2000);
+}
+
+function _handleExtractionStatus(s) {
+  STATE_extraction_running = !!s.running;
+  const pct = s.total > 0 ? Math.round(s.done / s.total * 100) : 0;
+  document.getElementById('progressFill').style.width = pct + '%';
+  // Update text without replacing the sseDot element.
+  // The old approach used innerHTML which re-created a new span with id="sseDot",
+  // orphaning the real dot element and breaking the SSE live/error class updates.
+  const statusEl = document.getElementById('statusText');
+  const dotEl    = document.getElementById('sseDot');
+  const txt = s.running
+    ? `${s.done}/${s.total} · ${s.errors} err · ${s.rate_limited} RL `
+    : `Done: ${s.done}/${s.total} `;
+  // Remove only text nodes, keeping the dot element intact
+  Array.from(statusEl.childNodes).forEach(n => { if (n.nodeType === Node.TEXT_NODE) n.remove(); });
+  statusEl.insertBefore(document.createTextNode(txt), dotEl || null);
+  if (!s.running && s.done > 0) {
+    if (_pollInterval) { clearInterval(_pollInterval); _pollInterval = null; }
+    document.getElementById('extractBtn').disabled = false;
+    document.getElementById('extractBtn').textContent = '▶ Extract Data';
+    loadScreener();
+  }
+}
+
+// ── Live price patch with blink ───────────────────────────────────
+// Called either from SSE 'prices' event or after a manual refresh.
+// Mutates _rows in-place and blinks only the cells that changed.
+function _applyLivePricePatch(updated) {
+  if (!updated || !Object.keys(updated).length) return;
+  const changedTickers = new Set();
+  _rows.forEach(r => {
+    const p = updated[r.Ticker];
+    if (!p) return;
+    if (p.ltp !== undefined && p.ltp !== r.LTP)        { r.LTP = p.ltp;         changedTickers.add(r.Ticker); }
+    if (p.chg !== undefined && p.chg !== r.DayChg_pct) { r.DayChg_pct = p.chg;  changedTickers.add(r.Ticker); }
+    if (p.vol !== undefined && p.vol !== r.LiveVol)    { r.LiveVol = p.vol;      changedTickers.add(r.Ticker); }
+  });
+  if (!changedTickers.size) return;
+
+  applyFilters(); // re-renders the table with new data
+
+  // Blink rows whose data actually changed — applied to <tr> to avoid
+  // specificity conflict with the tr:hover td { background } rule.
+  // Double-RAF: first frame lets the browser commit the new DOM from renderTable(),
+  // second frame starts the animation on elements that are now fully laid out.
+  requestAnimationFrame(() => requestAnimationFrame(() => {
+    document.querySelectorAll('#screenerBody tr').forEach(tr => {
+      const tickerEl = tr.querySelector('.ticker-cell');
+      if (tickerEl && changedTickers.has(tickerEl.dataset.ticker)) {
+        tr.classList.remove('row-updated');
+        void tr.offsetWidth; // force reflow so animation restarts
+        tr.classList.add('row-updated');
+      }
+    });
+  }));
+}
+async function refreshLive() {
+  const btn = this instanceof HTMLElement ? this : null;
+  if (btn) { btn.disabled = true; btn.textContent = '↺ Refreshing…'; }
+  // prevLTP is captured AFTER loadScreener below, so we need a temp snapshot now
+  // of tickers only (not prices) so we can map back after the new data arrives.
+  const prevLTPSnapshot = Object.fromEntries(_rows.map(r => [r.Ticker, r.LTP]));
+  try {
+    await fetch('/api/refresh_live', { method: 'POST' });
+    let attempts = 0;
+    const poll = setInterval(async () => {
+      try {
+        const s = await fetch('/api/extraction/status').then(r => r.json());
+        if (s.last_refresh && s.last_refresh > Date.now() / 1000 - 10) {
+          clearInterval(poll);
+          // loadScreener replaces _rows with fresh API data that already has new prices
+          await loadScreener();
+          // Now diff new _rows against the snapshot taken before the refresh
+          const changedTickers = new Set(
+            _rows.filter(r => prevLTPSnapshot[r.Ticker] != null && r.LTP !== prevLTPSnapshot[r.Ticker])
+                 .map(r => r.Ticker)
+          );
+          requestAnimationFrame(() => requestAnimationFrame(() => {
+            document.querySelectorAll('#screenerBody tr').forEach(tr => {
+              const tickerEl = tr.querySelector('.ticker-cell');
+              if (tickerEl && changedTickers.has(tickerEl.dataset.ticker)) {
+                tr.classList.remove('row-updated');
+                void tr.offsetWidth;
+                tr.classList.add('row-updated');
+              }
+            });
+          }));
+          if (btn) { btn.disabled = false; btn.textContent = '↺ Refresh Live Prices'; }
+        }
+      } catch(_) {}
+      if (++attempts > 15) {
+        clearInterval(poll);
+        loadScreener();
+        if (btn) { btn.disabled = false; btn.textContent = '↺ Refresh Live Prices'; }
+      }
+    }, 1000);
+  } catch(e) {
+    if (btn) { btn.disabled = false; btn.textContent = '↺ Refresh Live Prices'; }
+  }
+}
+
+// ════════════════════════════════════════════════════
+// SCREENER LOAD
+// ════════════════════════════════════════════════════
+async function loadScreener() {
+  const horizon = document.getElementById('horizonSelect').value;
+  document.getElementById('loadingSpinner').style.display = '';
+  try {
+    // sort_by is no longer sent — all sorting is client-side via applyClientSort() / sortBy().
+    // Only horizon is a true server-side filter (the backend filters rows before returning them).
+    const d = await fetch(`/api/screener?horizon=${encodeURIComponent(horizon)}`).then(r => r.json());
+    _rows = d.rows || [];
+
+    // Compute score percentiles from live data — never hardcoded.
+    if (_rows.length >= 4) {
+      const s = _rows.map(r => r.Score).filter(v => v != null).sort((a,b) => a - b);
+      const n = s.length;
+      _sP75 = s[Math.floor(n * 0.75)] ?? 70;
+      _sP50 = s[Math.floor(n * 0.50)] ?? 50;
+      _sP25 = s[Math.floor(n * 0.25)] ?? 35;
+    }
+
+    renderMkt(d);
+    renderPills();
+    // Re-apply the active client-side sort so the order is preserved across reloads
+    applyClientSort();
+  } catch(e) { console.error(e); }
+  document.getElementById('loadingSpinner').style.display = 'none';
+}
+
+// ════════════════════════════════════════════════════
+// MARKET CONTEXT
+// ════════════════════════════════════════════════════
+function renderMkt(d) {
+  const reg  = d.regime || 'BULL';
+  const vix  = d.vix != null ? d.vix.toFixed(1) : '—';
+  const rc   = reg === 'BULL' ? 'bull' : reg === 'BEAR' ? 'bear' : 'neu';
+  const bp   = d.breadth != null ? (d.breadth * 100).toFixed(1) + '%' : '—';
+  const lr   = d.last_refresh ? new Date(d.last_refresh * 1000).toLocaleTimeString('en-IN', { hour:'2-digit', minute:'2-digit' }) : '—';
+  document.getElementById('mktContent').innerHTML = [
+    ['Regime',    `<span class="${rc}">${reg}</span>`],
+    ['VIX',       vix],
+    ['Mkt OK',    d.market_ok   ? '<span class="bull">YES</span>' : '<span class="bear">NO</span>'],
+    ['N50>50DMA', d.nifty_above_50dma ? '<span class="bull">YES</span>' : '<span class="bear">NO</span>'],
+    ['VIX↓',     d.vix_falling ? '<span class="bull">YES</span>' : '<span class="bear">NO</span>'],
+    ['Breadth',   bp],
+    ['Stocks',    d.total || 0],
+    ['LiveQ',     d.live_quotes || 0],
+    ['Refreshed', lr],
+  ].map(([k, v]) => `<div class="mkt-row"><span class="mkt-key">${k}</span><span class="mkt-val">${v}</span></div>`).join('');
+
+  if (d.sector_returns && Object.keys(d.sector_returns).length) {
+    document.getElementById('sectorSection').style.display = '';
+    document.getElementById('sectorContent').innerHTML = Object.entries(d.sector_returns)
+      .sort((a,b) => b[1] - a[1]).slice(0, 12)
+      .map(([k,v]) => `<div class="mkt-row"><span class="mkt-key">${k}</span><span class="mkt-val ${v > 0 ? 'bull' : 'bear'}">${v > 0 ? '+' : ''}${v.toFixed(1)}%</span></div>`).join('');
+  }
+}
+
+// ════════════════════════════════════════════════════
+// PILLS & FILTERS
+// ════════════════════════════════════════════════════
+function renderPills() {
+  const sects = [...new Set(_rows.map(r => r.Sector).filter(Boolean))].sort();
+  const pillsEl = document.getElementById('sectorPills');
+  pillsEl.innerHTML =
+    `<span class="sector-pill ${!_sectorFilter ? 'active' : ''}" data-sector="">ALL</span>` +
+    sects.map(s => `<span class="sector-pill ${_sectorFilter === s ? 'active' : ''}" data-sector="${s.replace(/"/g,'&quot;')}">${s}</span>`).join('');
+}
+// Delegate sector pill clicks — avoids apostrophe-in-sector-name JS injection via onclick=""
+document.getElementById('sectorPills').addEventListener('click', e => {
+  const pill = e.target.closest('.sector-pill');
+  if (!pill) return;
+  filterSector(pill.dataset.sector);
+});
+function filterSector(s) {
+  _sectorFilter = s;
+  document.querySelectorAll('.sector-pill').forEach(p => p.classList.toggle('active', p.textContent === (s || 'ALL')));
+  applyFilters();
+}
+function applyFilters() {
+  const q  = document.getElementById('searchInput').value.toLowerCase();
+  const st = document.getElementById('setupFilter').value;
+  _filteredRows = _rows.filter(r => {
+    const mq  = !q  || (r.Ticker||'').toLowerCase().includes(q) || (r.Sector||'').toLowerCase().includes(q);
+    const ms  = !_sectorFilter || r.Sector === _sectorFilter;
+    const mst = !st || r.SetupType === st;
+    return mq && ms && mst;
+  });
+
+  // Recompute live RR median from the currently visible filtered set.
+  const rrv = _filteredRows.map(r => r.RR).filter(v => v != null && !isNaN(v)).sort((a,b) => a - b);
+  _rrMedian = rrv.length ? rrv[Math.floor(rrv.length / 2)] : 2.0;
+
+  document.getElementById('visibleCount').textContent = `${_filteredRows.length} stocks`;
+  document.getElementById('rowCount').textContent = `(${_rows.length} total)`;
+  renderTable(_filteredRows);
+}
+
+// ════════════════════════════════════════════════════
+// PROGRESSIVE RENDER THROTTLE
+// ════════════════════════════════════════════════════
+// During extraction, SSE row events arrive rapidly. Re-rendering the full
+// table on every single arriving row would thrash the DOM. Instead we
+// schedule a render at most every 200 ms — coalescing bursts of arrivals
+// into a single paint while still feeling near-instant to the user.
+let _renderPending = false;
+function _scheduleRender() {
+  if (_renderPending) return;
+  _renderPending = true;
+  setTimeout(() => {
+    _renderPending = false;
+    // Re-sort by the active column then re-render
+    applyClientSort();
+    // Update sector pills to show any newly arrived sectors
+    renderPills();
+    // Update counts
+    document.getElementById('rowCount').textContent = `(${_rows.length} total)`;
+  }, 200);
+}
+
+// ════════════════════════════════════════════════════
+// CLIENT-SIDE SORT (no network round-trip)
+// ════════════════════════════════════════════════════
+// Called by the Sort dropdown. Sorts _rows in-place and re-renders.
+// loadScreener() is only called on horizon change (a server-side filter).
+function applyClientSort() {
+  const col = document.getElementById('sortSelect').value;
+  if (!_rows.length) return;
+  _rows.sort((a, b) => {
+    const av = a[col], bv = b[col];
+    if (av == null && bv == null) return 0;
+    if (av == null) return 1; if (bv == null) return -1;
+    if (typeof av === 'string') return bv.localeCompare(av);
+    return bv - av; // descending
+  });
+  _rows.forEach((r, i) => r.Rank = i + 1);
+  applyFilters();
+}
+
+// ════════════════════════════════════════════════════
+// VIEW SWITCHING
+// ════════════════════════════════════════════════════
+function switchView(name) {
+  _currentView = name;
+  document.querySelectorAll('.view-tab').forEach((t, i) => t.classList.toggle('active', ['core','trade','factor'][i] === name));
+  renderTable(_filteredRows);
+}
+
+// ════════════════════════════════════════════════════
+// SORT
+// ════════════════════════════════════════════════════
+function sortBy(col) {
+  if (_sortCol === col) _sortAsc = !_sortAsc;
+  else { _sortCol = col; _sortAsc = false; }
+  _filteredRows.sort((a, b) => {
+    const av = a[col], bv = b[col];
+    if (av == null) return 1; if (bv == null) return -1;
+    if (typeof av === 'string') return _sortAsc ? av.localeCompare(bv) : bv.localeCompare(av);
+    return _sortAsc ? (av - bv) : (bv - av);
+  });
+  // Sync the Sort dropdown to reflect the active column (best-effort — only if the key exists in options)
+  const sel = document.getElementById('sortSelect');
+  if ([...sel.options].some(o => o.value === col)) sel.value = col;
+  renderTable(_filteredRows);
+}
+
+// ════════════════════════════════════════════════════
+// TABLE RENDER — driven by COLS & VIEW_COLS
+// ════════════════════════════════════════════════════
 function renderTable(rows) {
+  const colKeys = VIEW_COLS[_currentView] || VIEW_COLS.core;
+  // Rebuild header
+  document.getElementById('screenerHead').innerHTML = '<tr>' +
+    colKeys.map(k => {
+      const def = COLS[k] || {};
+      const activeSort = _sortCol === k;
+      const sortCls = activeSort ? (_sortAsc ? 'sort-asc' : 'sort-desc') : '';
+      const tip = def.tip ? ` title="${def.tip}"` : '';
+      return `<th class="${sortCls}" onclick="sortBy('${k}')"${tip}>${def.label || k}</th>`;
+    }).join('') + '</tr>';
+
   if (!rows.length) {
     document.getElementById('screenerBody').innerHTML =
-      '<tr><td colspan="14" class="empty-state">No stocks match the current filters.</td></tr>';
+      `<tr><td colspan="${colKeys.length}" class="empty-state">No stocks match the current filters.</td></tr>`;
     return;
   }
-  const html = rows.map((r, i) => {
-    // API returns: Score (not TotalScore), RS (not RS_Score), VCP_Detected (not VCP),
-    // Pos52W (not Pos52W_pct), ATR% (not ATR_pct), CLVAccum (not CLV_Accum)
-    const score = r.Score;
-    const scoreClr = score >= 70 ? 'var(--green)' : score >= 40 ? 'var(--amber)' : 'var(--red)';
-    const signals = [
-      r.VCP_Detected ? `<span class="tag tag-vcp">VCP</span>` : '',
-      r.DarvasInBox  ? `<span class="tag tag-bo">BO</span>`  : '',
-      r.OI_Buildup > 0 ? `<span class="tag tag-oi">OI</span>` : '',
-    ].join('');
-    const sigDots = [
-      `<span class="sig ${r.UpVolSkew > 0 ? 'sig-g' : 'sig-n'}" title="UpVolSkew"></span>`,
-      `<span class="sig ${r.BBSqueeze > 0 ? 'sig-g' : 'sig-n'}" title="BBSqueeze"></span>`,
-      `<span class="sig ${r.CLVAccum  > 0 ? 'sig-g' : 'sig-n'}" title="CLV Accum"></span>`,
-    ].join('');
-    // DayChg% — derive from LTP vs EMA9 if not provided directly
-    const dayChgPct = r.DayChg_pct != null ? r.DayChg_pct : null;
-    const pos52wPct = r.Pos52W != null ? (r.Pos52W * 100) : null;  // Pos52W is 0-1
-    const atrPct    = r['ATR%'] != null ? r['ATR%'] : r.ATR_pct;
-    return `<tr>
-      <td class="rank-cell">${r.Rank||i+1}</td>
-      <td class="ticker-cell" onclick="openStock('${r.Ticker}')">${r.Ticker}${signals}</td>
-      <td>₹${fv(r.LTP,2)}</td>
-      <td class="score-cell" style="color:${scoreClr}">${fv(score)}</td>
-      <td>${fv(r.CompositeRank,4)}</td>
-      <td ${clr(r.RS)}>${fv(r.RS)}</td>
-      <td>${r.VCP_Detected ? '<span style="color:var(--green)">✔</span>' : '—'}</td>
-      <td style="color:var(--muted)">${r.Horizon||'—'}</td>
-      <td style="color:var(--dim)">${r.Sector||'—'}</td>
-      <td ${clr(dayChgPct)}>${dayChgPct != null ? (parseFloat(dayChgPct)>0?'+':'') + fv(dayChgPct) + '%' : '—'}</td>
-      <td style="color:var(--muted)">${fmtVol(r.LiveVol)}</td>
-      <td ${clr(pos52wPct)}>${pos52wPct != null ? fv(pos52wPct) + '%' : '—'}</td>
-      <td>${fv(atrPct)}%</td>
-      <td>${sigDots}</td>
-    </tr>`;
-  }).join('');
-  document.getElementById('screenerBody').innerHTML = html;
+
+  document.getElementById('screenerBody').innerHTML = rows.map((r, i) =>
+    `<tr>${colKeys.map(k => {
+      const def = COLS[k] || {};
+      const val = def.fmt ? def.fmt(r) : (r[k] != null ? r[k] : '—');
+      return `<td>${val}</td>`;
+    }).join('')}</tr>`
+  ).join('');
+  // Note: click delegation is on #screenerTable (stable), set up once at bottom of script.
 }
 
-function openStock(ticker) {
-  // Quick links to other pages with ticker pre-filled
-  const menu = [
-    `<a href="/fundamentals" onclick="sessionStorage.setItem('prefill_sym','${ticker}')">📊 Fundamentals</a>`,
-    `<a href="/options" onclick="sessionStorage.setItem('prefill_sym','${ticker}')">⚙ Options</a>`,
-    `<a href="/ml" onclick="sessionStorage.setItem('prefill_sym','${ticker}')">🤖 ML Predict</a>`,
-  ];
-  // Simple: just open fundamentals with prefill
-  sessionStorage.setItem('prefill_sym', ticker);
-  // For now just navigate to fundamentals — future: popup
-  window.open(`/fundamentals?sym=${ticker}`, '_blank');
-}
+// ════════════════════════════════════════════════════
+// STOCK DETAIL MODAL
+// ════════════════════════════════════════════════════
+async function openStock(ticker) {
+  _currentStock = ticker;
+  _chartLoaded = _newsLoaded = _wlLoaded = _calibLoaded = false;
+  document.getElementById('modalTitle').textContent = ticker;
+  document.getElementById('modalMeta').textContent = 'Loading…';
+  document.getElementById('quickLinks').innerHTML = `
+    <a class="quick-link" href="/fundamentals?sym=${ticker}" target="_blank">📊 Fundamentals</a>
+    <a class="quick-link" href="/options" onclick="sessionStorage.setItem('prefill_sym','${ticker}')">⚙ Options</a>
+    <a class="quick-link" href="/ml" onclick="sessionStorage.setItem('prefill_sym','${ticker}')">🤖 ML</a>`;
+  switchTab('overview');
+  ['overviewContent','explainContent','tradeContent','watchlistContent','calibContent']
+    .forEach(id => document.getElementById(id).innerHTML = '<div class="empty-state"><span class="spinner"></span></div>');
+  document.getElementById('newsContent').innerHTML = '<div class="empty-state">Click News tab to load.</div>';
+  document.getElementById('chartContent').innerHTML = '<div class="empty-state">Click Chart tab to load.</div>';
+  document.getElementById('stockModal').classList.add('open');
+  document.body.style.overflow = 'hidden';
 
-// ── Auto-load screener if data exists ─────────────────────────────────────────
-(async function init() {
+  const row = _rows.find(r => r.Ticker === ticker);
+  if (row) {
+    renderOverview(row);
+    renderTrade(row);
+    document.getElementById('modalMeta').textContent =
+      `${row.Sector||'—'} · ${row.SetupType||'—'} · Score ${fv(row.Score,1)} · ${row.Horizon||'—'}`;
+  }
   try {
-    const r = await fetch('/api/extraction/status');
-    const s = await r.json();
-    if (s.cached > 0) {
-      loadScreener();
+    const d = await fetch(`/api/explain/${ticker}`).then(r => r.json());
+    renderExplain(d);
+    if (!row) document.getElementById('modalMeta').textContent = ticker;
+  } catch(e) {
+    document.getElementById('explainContent').innerHTML =
+      `<div class="empty-state" style="color:var(--muted)">Run screener first for explanation.<br><small>${e.message}</small></div>`;
+  }
+}
+
+// ── OVERVIEW ─────────────────────────────────────────────────────
+function renderOverview(r) {
+  // Factor tiles — all factors with their max-point denominator from FM
+  const factorDefs = [
+    ['RS',        r.RS,          FM.RS],
+    ['RS Sect',   r.RS_Sector,   FM.RS_Sector],
+    ['Volume',    r.Volume,      FM.Volume],
+    ['InstVol',   r.InstVol,     FM.InstVol],
+    ['VolCont',   r.VolCont,     FM.VolCont],
+    ['Coil',      r.Coil,        FM.Coil],
+    ['MA',        r.MA_Struct,   FM.MA_Struct],
+    ['Prox',      r.Proximity,   FM.Proximity],
+    ['BBSq',      r.BBSqueeze,   FM.BBSqueeze],
+    ['VolDry',    r.VolDryUp,    FM.VolDryUp],
+    ['CLV',       r.CLVAccum,    FM.CLVAccum],
+    ['VCP',       r.VCP,         FM.VCP],
+    ['Spread',    r.SpreadPts,   FM.SpreadPts],
+    ['Darvas',    r.Darvas,      FM.Darvas],
+    ['ATRPot',    r.ATR_Pot,     FM.ATR_Pot],
+    ['Candle',    r.Candle,      FM.Candle],
+  ];
+
+  const items = [
+    ['Score',        fv(r.Score,1),                                    sc(r.Score)],
+    ['EMI',          fv(r.EMI,3),                                      ''],
+    ['Composite Rk', fv(r.CompositeRank,4),                            ''],
+    ['Setup',        r.SetupType||'—',                                 'var(--amber2)'],
+    ['Horizon',      r.Horizon||'—',                                   'var(--amber2)'],
+    ['RSI',          fv(r.RSI7,1),                                     r.RSI7>70?'var(--red)':r.RSI7<35?'var(--blue)':''],
+    ['ATR%',         r['ATR%']!=null?fv(r['ATR%'],2)+'%':'—',         ''],
+    ['Vol Ratio',    fv(r.VolRatio,2)+'x',                            r.VolRatio>1.5?'var(--green)':''],
+    ['BO Prob',      r.BreakoutProb!=null?fv(r.BreakoutProb*100,1)+'%':'—', r.BreakoutProb>0.6?'var(--green)':''],
+    ['VCP Detect',   r.VCP_Detected?'YES':'NO',                        r.VCP_Detected?'var(--green)':'var(--dim)'],
+    ['VCP Pullbks',  r.VCP_Pullbacks??'—',                             ''],
+    ['VCP Contrac',  fv(r.VCP_Contraction,3),                          ''],
+    ['Darvas Box',   r.DarvasInBox?'IN BOX':'—',                       r.DarvasInBox?'var(--green)':'var(--dim)'],
+    ['Stability',    fv(r.Stability,2),                                r.Stability>0.6?'var(--green)':r.Stability<0.4?'var(--red)':''],
+    ['Pos 52W',      r.Pos52W!=null?fv(r.Pos52W*100,1)+'%':'—',       ''],
+    ['Above SMA200', r.AboveSMA200?'YES':'NO',                         r.AboveSMA200?'var(--green)':'var(--red)'],
+    ['EMA9',         r.EMA9!=null?'₹'+fv(r.EMA9,2):'—',               ''],
+    ['EMA20',        r.EMA20!=null?'₹'+fv(r.EMA20,2):'—',             ''],
+    ['Patterns',     r.Patterns||'—',                                  'var(--amber2)'],
+    ['Sig Persist',  r.SignalPersist!=null?fv(r.SignalPersist*100,0)+'%':'—', ''],
+    ['OI Buildup',   fv(r.OI_Buildup,1),                               r.OI_Buildup>0?'var(--blue)':''],
+    ['RS Diverge',   fv(r.RSDivergence,1),                             r.RSDivergence>0?'var(--green)':''],
+    ['VCVE',         fv(r.VCVE,3),                                     ''],
+    ['UpVol Skew',   fv(r.UpVolSkew,1),                                ''],
+    ['CPR',          fv(r.CPR,1),                                      ''],
+    ['Spread Comp',  fv(r.SpreadPts,1),                                ''],
+    ['ATR Exp',      fv(r.ATRExpOnset,1),                              ''],
+    ['Sweep',        r.Sweep?'YES':'—',                                 r.Sweep?'var(--cyan)':'var(--dim)'],
+    ['VWAP↑',        r.VWMA20_OK?'YES':'—',                           r.VWMA20_OK?'var(--green)':'var(--dim)'],
+    ['Soft Penalty', '-'+fv(r.SoftPenalty,1),                          r.SoftPenalty>5?'var(--red)':'var(--muted)'],
+    ['Liquidity',    r.LiquidityScore!=null?fv(r.LiquidityScore,3):'—',''],
+    ['ADV',          r.ADVTurnover!=null?'₹'+fv(r.ADVTurnover,1)+'Cr':'—',''],
+    ['Horizon Note', r.HorizonNote||'—',                               'var(--muted)'],
+  ];
+
+  document.getElementById('overviewContent').innerHTML = `
+    <div style="display:flex;align-items:center;gap:12px;margin-bottom:10px">
+      <div style="font-size:2.2rem;font-weight:700;color:${sc(r.Score)}">${fv(r.Score,1)}</div>
+      <div>
+        <div style="font-size:.57rem;color:var(--muted);text-transform:uppercase;letter-spacing:.1em">Score</div>
+        <div style="font-size:.67rem;color:var(--amber2)">${r.SetupType||'—'} · ${r.Horizon||'—'}</div>
+      </div>
+      <div style="flex:1;background:#1a1a1a;height:5px;border-radius:2px;margin-left:8px">
+        <div style="height:5px;border-radius:2px;background:${sc(r.Score)};width:${Math.min(r.Score||0,100)}%"></div>
+      </div>
+    </div>
+    <div class="factor-grid">
+      ${factorDefs.map(([lbl, val, max]) => {
+        const pct = val != null ? Math.min((val / max) * 100, 100) : 0;
+        const c = pct >= 60 ? 'var(--green)' : pct >= 30 ? 'var(--amber)' : 'var(--red)';
+        return `<div class="factor-tile">
+          <div class="factor-tile-label">${lbl}</div>
+          <div class="factor-tile-val" style="color:${c}">${val != null ? fv(val,1) : '—'}<span style="color:var(--dim);font-size:.52rem">/${max}</span></div>
+          <div class="factor-tile-bar"><div style="height:2px;background:${c};width:${pct.toFixed(0)}%;border-radius:1px"></div></div>
+        </div>`;
+      }).join('')}
+    </div>
+    <div class="score-grid">
+      ${items.map(([lbl, val, c]) => `
+        <div class="score-item">
+          <div class="score-item-label">${lbl}</div>
+          <div class="score-item-val" style="${c ? 'color:' + c : ''}">${val}</div>
+        </div>`).join('')}
+    </div>`;
+}
+
+// ── TRADE ─────────────────────────────────────────────────────────
+function renderTrade(r) {
+  document.getElementById('tradeContent').innerHTML = `
+    <div class="trade-box">
+      <div class="trade-card">
+        <div class="trade-label">Entry</div>
+        <div class="trade-val" style="color:var(--amber)">${r.Entry!=null?'₹'+fv(r.Entry,2):'—'}</div>
+      </div>
+      <div class="trade-card">
+        <div class="trade-label">Target</div>
+        <div class="trade-val" style="color:var(--green)">${r.Target!=null?'₹'+fv(r.Target,2):'—'}</div>
+        <div style="font-size:.55rem;color:var(--muted);margin-top:2px">+${r['Move%']!=null?fv(r['Move%'],1)+'%':'—'}</div>
+      </div>
+      <div class="trade-card">
+        <div class="trade-label">Stop Loss</div>
+        <div class="trade-val" style="color:var(--red)">${r.Stop!=null?'₹'+fv(r.Stop,2):'—'}</div>
+        <div style="font-size:.55rem;color:var(--muted);margin-top:2px">Risk: ₹${r.Risk!=null?fv(r.Risk,1):'—'}</div>
+      </div>
+      <div class="trade-card">
+        <div class="trade-label">Risk:Reward</div>
+        <div class="trade-val">${rrFmt(r.RR)}</div>
+      </div>
+      <div class="trade-card">
+        <div class="trade-label">Kelly Size</div>
+        <div class="trade-val">${r.KellyFrac!=null?(r.KellyFrac*100).toFixed(1)+'%':'—'}</div>
+        <div style="font-size:.55rem;color:var(--muted);margin-top:2px">of capital</div>
+      </div>
+      <div class="trade-card">
+        <div class="trade-label">Reward ₹</div>
+        <div class="trade-val" style="color:var(--green)">${r.Reward!=null?fv(r.Reward,1):'—'}</div>
+      </div>
+    </div>
+    <div class="note-box amber"><div class="note-box-label">Entry Note</div><div class="note-box-text">${r.EntryNote||'—'}</div></div>
+    <div class="note-box blue"><div class="note-box-label">Horizon Note</div><div class="note-box-text">${r.HorizonNote||'—'}</div></div>
+    <div style="margin-top:10px;display:flex;gap:7px;align-items:center;flex-wrap:wrap">
+      <button class="btn-inline" onclick="logSignal('${r.Ticker}')">📝 Log to DB</button>
+      <button class="btn-inline sec" onclick="addWLDirect('${r.Ticker}')">+ Watchlist</button>
+      <span class="flash" id="tradeFlash"></span>
+    </div>`;
+}
+
+// ── EXPLAIN ───────────────────────────────────────────────────────
+function renderExplain(d) {
+  const items = d.explanation || [];
+  if (!items.length) { document.getElementById('explainContent').innerHTML = '<div class="empty-state">No explanation data.</div>'; return; }
+  document.getElementById('explainContent').innerHTML = `
+    <div style="margin-bottom:8px;font-size:.61rem;color:var(--muted)">
+      Score:<span style="color:var(--amber);font-weight:700;margin-left:4px">${d.score_summary?.score??'—'}</span>
+      &nbsp;·&nbsp;Setup:<span style="color:var(--amber2);margin-left:4px">${d.score_summary?.setup??'—'}</span>
+      &nbsp;·&nbsp;Horizon:<span style="color:var(--amber2);margin-left:4px">${d.score_summary?.horizon??'—'}</span>
+      &nbsp;·&nbsp;Regime:<span style="color:var(--amber2);margin-left:4px">${d.score_summary?.regime??'—'}</span>
+      &nbsp;·&nbsp;<span style="color:var(--dim)">${d.score_summary?.total_factors??0} factors</span>
+    </div>
+    <div class="table-wrap"><table class="explain-table">
+      <thead><tr><th>Factor</th><th>Value</th><th>What it measures</th><th>Implication</th></tr></thead>
+      <tbody>${items.map(it => `<tr>
+        <td>${it.label}</td>
+        <td style="color:var(--amber2)">${it.value}</td>
+        <td style="color:var(--muted)">${it.why||'—'}</td>
+        <td>${it.implication||'—'}</td>
+      </tr>`).join('')}</tbody>
+    </table></div>`;
+}
+
+// ── CHART ─────────────────────────────────────────────────────────
+async function loadChart(ticker) {
+  document.getElementById('chartContent').innerHTML = '<div class="empty-state"><span class="spinner"></span> Loading…</div>';
+  try {
+    const d = await fetch(`/api/chart/${ticker}`).then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); });
+    renderChart(d);
+  } catch(e) {
+    document.getElementById('chartContent').innerHTML =
+      `<div class="empty-state" style="color:var(--red)">Chart error: ${e.message}<br><small style="color:var(--muted)">Run extraction first.</small></div>`;
+  }
+}
+function renderChart(d) {
+  const bars = d.bars || [];
+  if (!bars.length) { document.getElementById('chartContent').innerHTML = '<div class="empty-state">No chart data.</div>'; return; }
+
+  // Proportional layout — no fixed pixel heights hardcoded for data logic.
+  const W = 900, H = 290, VHGT = 60, PAD = { l:52, r:24, t:12, b:22 };
+  const n = bars.length;
+  const highs = bars.map(b => b.high), lows = bars.map(b => b.low), vols = bars.map(b => b.volume || 0);
+  const minP = Math.min(...lows) * 0.9978, maxP = Math.max(...highs) * 1.0022;
+  const maxV = Math.max(...vols) || 1;
+  const cW   = (W - PAD.l - PAD.r) / n;
+  const px   = i  => PAD.l + i * cW + cW * 0.5;
+  const py   = v  => PAD.t + (1 - (v - minP) / (maxP - minP)) * H;
+  const pv   = v  => (v / maxV) * VHGT;
+
+  const pathD = bars.map((b, i) => `${i === 0 ? 'M' : 'L'}${px(i).toFixed(1)},${py(b.close).toFixed(1)}`).join(' ');
+  const e9p   = bars.reduce((a, b, i) => b.ema9  ? a + (a ? 'L' : 'M') + `${px(i).toFixed(1)},${py(b.ema9).toFixed(1)} `  : a, '');
+  const e20p  = bars.reduce((a, b, i) => b.ema20 ? a + (a ? 'L' : 'M') + `${px(i).toFixed(1)},${py(b.ema20).toFixed(1)} ` : a, '');
+  const e50p  = bars.reduce((a, b, i) => b.ema50 ? a + (a ? 'L' : 'M') + `${px(i).toFixed(1)},${py(b.ema50).toFixed(1)} ` : a, '');
+
+  // Last 30% of bars rendered as candles (up to 40)
+  const cc = Math.min(Math.floor(n * 0.30), 40);
+  const cs2 = n - cc;
+  const candleSvg = bars.slice(cs2).map((b, ci) => {
+    const i = cs2 + ci, x = px(i), bull = b.close >= b.open, cl = bull ? '#00d084' : '#ff3b3b';
+    const bt = py(Math.max(b.open, b.close)), bb = py(Math.min(b.open, b.close)), bh = Math.max(bb - bt, 1);
+    const bw = Math.max(cW * 0.65, 1.5);
+    return `<rect x="${(x-bw/2).toFixed(1)}" y="${bt.toFixed(1)}" width="${bw.toFixed(1)}" height="${bh.toFixed(1)}" fill="${cl}" opacity=".78"/>
+            <line x1="${x.toFixed(1)}" y1="${py(b.high).toFixed(1)}" x2="${x.toFixed(1)}" y2="${py(b.low).toFixed(1)}" stroke="${cl}" stroke-width=".8"/>`;
+  }).join('');
+
+  const volSvg = bars.map((b, i) => {
+    const vh = pv(b.volume || 0), bull = i > 0 ? b.close >= bars[i-1].close : b.close >= b.open;
+    return `<rect x="${(px(i)-cW*0.38).toFixed(1)}" y="${(VHGT-vh).toFixed(1)}" width="${(cW*0.76).toFixed(1)}" height="${vh.toFixed(1)}" fill="${bull?'#00d08430':'#ff3b3b30'}"/>`;
+  }).join('');
+
+  const step = Math.max(1, Math.floor(n / 8));
+  const xLbls = bars.filter((_, i) => i % step === 0)
+    .map(b => `<text x="${px(bars.indexOf(b)).toFixed(1)}" y="${H+PAD.t+PAD.b-4}" fill="#444" font-size="9" text-anchor="middle">${(b.time||'').slice(5)}</text>`).join('');
+  const yLbls = Array.from({ length: 7 }, (_, i) => {
+    const v = minP + (maxP - minP) * (i / 6), y = py(v).toFixed(1);
+    return `<text x="${PAD.l-4}" y="${+y+3}" fill="#444" font-size="9" text-anchor="end">${v.toFixed(0)}</text>
+            <line x1="${PAD.l}" y1="${y}" x2="${W-PAD.r}" y2="${y}" stroke="#161616" stroke-width=".5"/>`;
+  }).join('');
+
+  const totalH = H + PAD.t + PAD.b + VHGT + 14;
+  document.getElementById('chartContent').innerHTML = `
+    <div style="font-size:.59rem;color:var(--muted);margin-bottom:5px;display:flex;gap:12px">
+      <span style="color:#555">▬ Price</span><span style="color:var(--blue)">— EMA9</span>
+      <span style="color:var(--amber)">— EMA20</span><span style="color:#9966cc">— EMA50</span>
+      <span style="color:var(--dim)">Last ${cc} bars: candles</span>
+    </div>
+    <div style="overflow-x:auto">
+      <svg viewBox="0 0 ${W} ${totalH}" style="width:100%;min-width:480px;display:block">
+        ${yLbls}
+        <g transform="translate(0,${H+PAD.t+PAD.b+4})">${volSvg}
+          <line x1="${PAD.l}" y1="0" x2="${W-PAD.r}" y2="0" stroke="#2a2a2a" stroke-width="1"/>
+          <text x="${PAD.l-4}" y="10" fill="#333" font-size="8" text-anchor="end">VOL</text>
+        </g>
+        <path d="${pathD}" fill="none" stroke="#333" stroke-width="1" opacity=".5"/>
+        ${candleSvg}
+        <path d="${e50p}" fill="none" stroke="#9966cc" stroke-width="1" opacity=".7"/>
+        <path d="${e20p}" fill="none" stroke="var(--amber)" stroke-width="1.2" opacity=".85"/>
+        <path d="${e9p}"  fill="none" stroke="var(--blue)"  stroke-width="1.2" opacity=".85"/>
+        ${xLbls}
+        <line x1="${PAD.l}" y1="${PAD.t}" x2="${PAD.l}" y2="${H+PAD.t}" stroke="#2a2a2a" stroke-width="1"/>
+        <line x1="${PAD.l}" y1="${H+PAD.t}" x2="${W-PAD.r}" y2="${H+PAD.t}" stroke="#2a2a2a" stroke-width="1"/>
+        <line x1="${PAD.l}" y1="${py(bars[n-1].close).toFixed(1)}" x2="${W-PAD.r}" y2="${py(bars[n-1].close).toFixed(1)}" stroke="#ff8c0044" stroke-width=".8" stroke-dasharray="3,2"/>
+        <text x="${W-PAD.r+2}" y="${+py(bars[n-1].close)+3}" fill="var(--amber)" font-size="8">₹${bars[n-1].close?.toFixed(0)}</text>
+      </svg>
+    </div>
+    <div style="font-size:.57rem;color:var(--dim);margin-top:3px">${d.symbol} · ${bars.length} bars · Last: ${bars[n-1].time||'—'}</div>`;
+}
+
+// ── NEWS ──────────────────────────────────────────────────────────
+async function loadNews(ticker) {
+  if (_newsLoaded) return; _newsLoaded = true;
+  document.getElementById('newsContent').innerHTML = '<div class="empty-state"><span class="spinner"></span> Fetching…</div>';
+  try {
+    const d = await fetch(`/api/news?symbol=${encodeURIComponent(ticker)}`).then(r => r.json());
+    const arts = d.articles || [];
+    if (!arts.length) {
+      document.getElementById('newsContent').innerHTML =
+        `<div class="empty-state">No news found for ${ticker}.<br><small style="color:var(--dim)">Headlines are matched by ticker name.</small></div>`;
+      return;
     }
+    document.getElementById('newsContent').innerHTML = arts.map(a => `
+      <div class="news-item">
+        <div class="news-title"><a href="${a.link}" target="_blank" rel="noopener">${a.title}</a></div>
+        <div class="news-meta"><span>${a.source||''}</span><span>${a.pub||''}</span></div>
+        ${a.summary ? `<div class="news-summary">${a.summary}</div>` : ''}
+      </div>`).join('');
+  } catch(e) {
+    document.getElementById('newsContent').innerHTML = `<div class="empty-state" style="color:var(--red)">${e.message}</div>`;
+  }
+}
+
+// ── WATCHLIST ─────────────────────────────────────────────────────
+async function loadWatchlist(ticker) {
+  if (_wlLoaded) return; _wlLoaded = true;
+  try {
+    const d = await fetch('/api/watchlist').then(r => r.json());
+    renderWL(d.symbols || [], ticker);
+  } catch(e) {
+    document.getElementById('watchlistContent').innerHTML = `<div class="empty-state" style="color:var(--red)">${e.message}</div>`;
+  }
+}
+function renderWL(syms, ticker) {
+  const inList = syms.some(s => s.symbol === ticker);
+  document.getElementById('watchlistContent').innerHTML = `
+    <div style="display:flex;gap:7px;align-items:center;margin-bottom:12px;flex-wrap:wrap">
+      <button class="btn-inline ${inList ? 'sec' : ''}" onclick="toggleWL('${ticker}',${inList})">
+        ${inList ? '✓ Remove from Watchlist' : '+ Add to Watchlist'}
+      </button>
+      <input id="wlNote" class="ctrl-input" placeholder="Optional note…" style="margin:0;flex:1;max-width:210px">
+      <span class="flash" id="wlFlash"></span>
+    </div>
+    ${syms.length
+      ? `<div class="calib-title">All Watchlist (${syms.length})</div>
+         <div id="wlList">${syms.map(s => `<div class="wl-row">
+           <span class="wl-sym" data-ticker="${s.symbol.replace(/"/g,'')}">${s.symbol}</span>
+           <span class="wl-note">${s.note||'—'}</span>
+           <span class="wl-date">${(s.added||'').slice(0,10)}</span>
+           <button class="wl-del" data-delsym="${s.symbol.replace(/"/g,'')}">✕</button>
+         </div>`).join('')}</div>`
+      : '<div style="color:var(--dim);font-size:.61rem">Watchlist is empty.</div>'}`;
+  const wlList = document.getElementById('wlList');
+  if (wlList) {
+    wlList.addEventListener('click', e => {
+      const sym = e.target.closest('[data-ticker]');
+      const del = e.target.closest('[data-delsym]');
+      if (sym) { openStock(sym.dataset.ticker); closeModal(); }
+      if (del) removeWL(del.dataset.delsym);
+    });
+  }
+}
+async function toggleWL(sym, inList) {
+  const note = document.getElementById('wlNote')?.value || '';
+  const f = document.getElementById('wlFlash');
+  try {
+    if (inList) await fetch(`/api/watchlist/${sym}`, { method: 'DELETE' });
+    else await fetch('/api/watchlist', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ symbol: sym, note }) });
+    f.textContent = inList ? `${sym} removed.` : `${sym} added.`; f.className = 'flash ok';
+    _wlLoaded = false; loadWatchlist(sym);
+  } catch(e) { f.textContent = e.message; f.className = 'flash err'; }
+}
+async function addWLDirect(sym) {
+  const f = document.getElementById('tradeFlash');
+  try {
+    await fetch('/api/watchlist', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ symbol: sym }) });
+    f.textContent = `${sym} added to watchlist.`; f.className = 'flash ok';
+  } catch(e) { f.textContent = e.message; f.className = 'flash err'; }
+}
+async function removeWL(sym) {
+  try {
+    await fetch(`/api/watchlist/${sym}`, { method: 'DELETE' });
+    _wlLoaded = false; loadWatchlist(_currentStock);
+  } catch(e) {
+    const f = document.getElementById('wlFlash');
+    if (f) { f.textContent = `Failed to remove ${sym}: ${e.message}`; f.className = 'flash err'; }
+  }
+}
+
+// ── CALIBRATION ───────────────────────────────────────────────────
+async function loadCalib(ticker) {
+  if (_calibLoaded) return; _calibLoaded = true;
+  const row = _rows.find(r => r.Ticker === ticker);
+  document.getElementById('calibContent').innerHTML = `
+    <div class="calib-title" style="margin-bottom:7px">Log This Signal to DB</div>
+    <p style="font-size:.61rem;color:var(--muted);margin-bottom:9px;line-height:1.5">
+      Saves <b style="color:var(--amber)">${ticker}</b> with score <b style="color:var(--amber)">${fv(row?.Score,1)}</b>
+      to <b style="color:var(--amber2)">monarch_data.db</b> (SQLite — persistent across restarts).
+      Forward 5D returns are filled later via sidebar "↻ Update Forward Returns".
+    </p>
+    <div style="display:flex;gap:7px;align-items:center;margin-bottom:14px;flex-wrap:wrap">
+      <button class="btn-inline" onclick="logSignal('${ticker}')">📝 Log Signal to DB</button>
+      <span class="flash" id="calibSignalFlash"></span>
+    </div>
+    <div class="calib-title">Universe-wide Calibration Stats (from DB)</div>
+    <div id="calibStatsInner"><div class="empty-state" style="padding:18px"><span class="spinner-sm"></span> Loading…</div></div>`;
+  try {
+    const d = await fetch('/api/db/calibration/stats').then(r => r.json());
+    renderCalibStats('calibStatsInner', d);
+  } catch(e) { document.getElementById('calibStatsInner').textContent = 'No data — log signals first.'; }
+}
+function renderCalibStats(targetId, d) {
+  if (d.error) {
+    document.getElementById(targetId).innerHTML = `
+      <div style="color:var(--muted);font-size:.61rem;padding:10px">${d.error}<br><br>
+        <b style="color:var(--amber)">How to use:</b><br>
+        1. Run extraction → click <b>📸 Log All Signals to DB</b> in sidebar<br>
+        2. Wait 5 trading days<br>
+        3. Re-run extraction → click <b>↻ Update Forward Returns</b><br>
+        4. Repeat daily to build a meaningful dataset</div>`;
+    return;
+  }
+  document.getElementById(targetId).innerHTML = `
+    <div class="stat-grid">
+      <div class="stat-card"><div class="stat-label">Total Records</div><div class="stat-val">${d.count}</div></div>
+      <div class="stat-card"><div class="stat-label">Overall Win Rate</div>
+        <div class="stat-val" style="color:${d.overall_win_rate>=THRESH.WIN_RATE_GOOD?'var(--green)':d.overall_win_rate>=THRESH.WIN_RATE_MID?'var(--amber)':'var(--red)'}">${d.overall_win_rate}%</div></div>
+      <div class="stat-card"><div class="stat-label">Avg 5D Return</div>
+        <div class="stat-val" style="color:${d.overall_avg_ret>0?'var(--green)':'var(--red)'}">${(d.overall_avg_ret*100).toFixed(2)}%</div></div>
+      <div class="stat-card"><div class="stat-label">Score p25/p50/p75</div>
+        <div class="stat-val" style="font-size:.66rem">${d.score_percentiles?.p25} / ${d.score_percentiles?.p50} / ${d.score_percentiles?.p75}</div></div>
+    </div>
+    <table class="q-table">
+      <thead><tr><th>Quartile</th><th>Count</th><th>Avg 5D Ret%</th><th>Win Rate%</th></tr></thead>
+      <tbody>${Object.entries(d.quartiles||{}).map(([q,v]) => `<tr>
+        <td style="color:var(--amber2)">${q}</td><td>${v.n}</td>
+        <td style="color:${v.avg_ret>0?'var(--green)':'var(--red)'}">${(v.avg_ret*100).toFixed(2)}%</td>
+        <td style="color:${v.win_rate>=THRESH.WIN_RATE_GOOD?'var(--green)':v.win_rate>=THRESH.WIN_RATE_MID?'var(--amber)':'var(--red)'}">${v.win_rate}%</td>
+      </tr>`).join('')}</tbody>
+    </table>`;
+}
+async function logSignal(ticker) {
+  const f = document.getElementById('calibSignalFlash') || document.getElementById('tradeFlash');
+  const row = _rows.find(r => r.Ticker === ticker);
+  try {
+    await fetch('/api/db/calibration', { method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ symbol: ticker, score: row?.Score, horizon: row?.Horizon||'', setup: row?.SetupType||'' }) });
+    if (f) { f.textContent = `✔ ${ticker} logged to DB.`; f.className = 'flash ok'; }
+  } catch(e) { if (f) { f.textContent = e.message; f.className = 'flash err'; } }
+}
+// ── MAIN LOG-ALL BUTTON (top of screener) ────────────────────────
+async function logAllSignalsMain() {
+  const btn = document.getElementById('logAllBtn');
+  const flash = document.getElementById('logAllFlash');
+  if (!_rows || !_rows.length) {
+    flash.textContent = '✘ Run extraction first.';
+    flash.className = 'flash err';
+    return;
+  }
+  btn.disabled = true;
+  btn.classList.add('saving');
+  btn.textContent = '⟳ Saving…';
+  flash.textContent = '';
+  flash.className = 'flash';
+  try {
+    const d = await fetch('/api/calibration/snapshot', { method: 'POST' }).then(r => r.json());
+    if (d.error) {
+      flash.textContent = '✘ ' + d.error;
+      flash.className = 'flash err';
+    } else {
+      flash.textContent = '✔ Logged ' + d.logged + ' signals.';
+      flash.className = 'flash ok';
+      // Also update sidebar flash for consistency
+      const sf = document.getElementById('calibFlash');
+      if (sf) { sf.textContent = flash.textContent; sf.className = 'flash ok'; }
+    }
+  } catch(e) {
+    flash.textContent = '✘ ' + e.message;
+    flash.className = 'flash err';
+  } finally {
+    btn.disabled = false;
+    btn.classList.remove('saving');
+    btn.textContent = '📸 Save Signals to DB';
+    setTimeout(() => { flash.textContent = ''; flash.className = 'flash'; }, 6000);
+  }
+}
+
+async function runCalibSnapshot() {
+  const f = document.getElementById('calibFlash');
+  f.textContent = 'Logging…'; f.className = 'flash';
+  try {
+    const d = await fetch('/api/calibration/snapshot', { method: 'POST' }).then(r => r.json());
+    f.textContent = d.error ? `✘ ${d.error}` : `✔ Logged ${d.logged} signals to DB.`;
+    f.className = d.error ? 'flash err' : 'flash ok';
+  } catch(e) { f.textContent = e.message; f.className = 'flash err'; }
+}
+async function updateForwardReturns() {
+  const f = document.getElementById('calibFlash');
+  f.textContent = 'Updating…'; f.className = 'flash';
+  try {
+    const d = await fetch('/api/db/calibration/update_returns', { method: 'POST' }).then(r => r.json());
+    f.textContent = `✔ Updated ${d.updated}/${d.pending} pending records.`;
+    f.className = 'flash ok';
+  } catch(e) { f.textContent = e.message; f.className = 'flash err'; }
+}
+async function openCalibModal() {
+  document.getElementById('calibModal').classList.add('open');
+  document.getElementById('calibStatsContent').innerHTML = '<div class="empty-state"><span class="spinner"></span></div>';
+  try {
+    const d = await fetch('/api/db/calibration/stats').then(r => r.json());
+    renderCalibStats('calibStatsContent', d);
+  } catch(e) {
+    document.getElementById('calibStatsContent').innerHTML = `<div class="empty-state" style="color:var(--red)">${e.message}</div>`;
+  }
+}
+
+// ── TAB SWITCHING ─────────────────────────────────────────────────
+const TAB_NAMES = ['overview','chart','explain','trade','news','watchlist','calib'];
+function switchTab(name) {
+  document.querySelectorAll('.modal-tab').forEach((t, i) => t.classList.toggle('active', TAB_NAMES[i] === name));
+  document.querySelectorAll('.modal-panel').forEach(p => p.classList.toggle('active', p.id === 'mp-' + name));
+  if (name === 'chart'     && !_chartLoaded  && _currentStock) { _chartLoaded = true; loadChart(_currentStock); }
+  if (name === 'news'      && !_newsLoaded   && _currentStock) loadNews(_currentStock);
+  if (name === 'watchlist' && !_wlLoaded     && _currentStock) loadWatchlist(_currentStock);
+  if (name === 'calib'     && !_calibLoaded  && _currentStock) loadCalib(_currentStock);
+}
+function closeModal() {
+  document.getElementById('stockModal').classList.remove('open');
+  document.body.style.overflow = '';
+  _currentStock = null;
+  _chartLoaded = _newsLoaded = _wlLoaded = _calibLoaded = false;
+}
+function closeModalOutside(e) { if (e.target === document.getElementById('stockModal')) closeModal(); }
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') {
+    closeModal();
+    document.getElementById('calibModal').classList.remove('open');
+  }
+});
+
+// ── INIT ──────────────────────────────────────────────────────────
+// Auto-remove row-updated class when the blink animation finishes.
+// This ensures a subsequent price change on the same row always triggers
+// a fresh animation rather than being a no-op on an already-animated element.
+document.getElementById('screenerBody').addEventListener('animationend', e => {
+  if (e.target.classList.contains('row-updated')) {
+    e.target.classList.remove('row-updated');
+  }
+}, true); // capture phase so it catches events on <tr> children too
+
+// Single, stable event delegation for ticker clicks.
+// Attached once on #screenerTable which is never re-rendered,
+// unlike #screenerBody which is replaced on every render.
+// The old { once: true } on screenerBody meant only the FIRST click
+// per render worked — subsequent clicks were silently dropped.
+document.getElementById('screenerTable').addEventListener('click', e => {
+  const td = e.target.closest('.ticker-cell');
+  if (td && td.dataset.ticker) openStock(td.dataset.ticker);
+});
+
+(async function() {
+  // Always open SSE channel for live-price pushes even when not extracting
+  _startSSE();
+  try {
+    const s = await fetch('/api/extraction/status').then(r => r.json());
+    if (s.cached > 0) loadScreener();
     if (s.running) {
       document.getElementById('extractBtn').disabled = true;
       document.getElementById('extractBtn').textContent = '⟳ Extracting…';
-      startPolling();
+      // SSE already started above; it will handle status updates
     }
   } catch(e) {}
 })();
