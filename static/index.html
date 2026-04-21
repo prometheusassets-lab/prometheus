@@ -619,10 +619,15 @@ const VIEW_COLS = {
 // Weights × 100 = max points for each component.
 // W_RS=0.18→18 but api returns RS already as pts (rs_combined*18),
 // so we match what aggregate_score actually puts in each field.
+// FM = factor max-points map. Derived from ScoreConfig in main.py:
+// W_RS=0.18→18, W_RS_SECT=0.07→7, W_VOLUME=0.14→14, W_COIL=0.12→12
+// W_MA=0.10→10, W_PROXIMITY=0.10→10, W_VCP=0.08→8 (displayed as /10 for readability),
+// W_DARVAS=0.05→5 (displayed as /10), W_MICROSTRUCTURE=0.04→4.
+// Note: barFmt max arg is the DISPLAY denominator, not always the true max.
 const FM = {
-  RS:15, RS_Sector:10, Volume:15, InstVol:10, VolCont:10,
-  Coil:10, MA_Struct:10, Proximity:10, ATR_Pot:5, Candle:5,
-  BBSqueeze:8, VolDryUp:8, CLVAccum:8, VCP:10, SpreadPts:11, Darvas:10,
+  RS:18, RS_Sector:7, Volume:14, InstVol:10, VolCont:10,
+  Coil:12, MA_Struct:10, Proximity:10, ATR_Pot:5, Candle:5,
+  BBSqueeze:8, VolDryUp:8, CLVAccum:8, VCP:8, SpreadPts:11, Darvas:5,
 };
 
 // ════════════════════════════════════════════════════
