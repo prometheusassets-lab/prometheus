@@ -41,10 +41,26 @@ html, body { background: var(--bg); color: var(--white); font-family: var(--mono
 ::-webkit-scrollbar-thumb:hover { background: var(--amber); }
 
 /* ── LAYOUT ── */
-.terminal { display: flex; flex-direction: column; height: 100vh; }
+.terminal { display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
 .main-area { display: flex; flex: 1; overflow: hidden; }
 .sidebar { width: 220px; flex-shrink: 0; background: #080808; border-right: 1px solid var(--border); overflow-y: auto; display: flex; flex-direction: column; }
-.content { flex: 1; overflow: auto; padding: 10px 14px; }
+.content { flex: 1; overflow: hidden; display: flex; flex-direction: column; padding: 10px 14px; }
+
+/* ── HORIZONTAL SCROLL WRAPPER — fills remaining content height, scrolls independently ── */
+.table-scroll-outer {
+  flex: 1;
+  overflow-x: auto;
+  overflow-y: auto;
+  /* Ensure the scrollbar always shows at the top of the table, not at the bottom of the page */
+  -webkit-overflow-scrolling: touch;
+  border: 1px solid var(--border2);
+  border-radius: 2px;
+}
+/* Sticky horizontal scrollbar at the top of the table area */
+.table-scroll-outer::-webkit-scrollbar { height: 6px; width: 6px; }
+.table-scroll-outer::-webkit-scrollbar-track { background: #070707; }
+.table-scroll-outer::-webkit-scrollbar-thumb { background: #2a2a2a; border-radius: 3px; }
+.table-scroll-outer::-webkit-scrollbar-thumb:hover { background: var(--amber); }
 
 /* ── SIDEBAR ── */
 .sidebar-section { padding: 9px 12px; border-bottom: 1px solid var(--border2); }
@@ -105,9 +121,9 @@ html, body { background: var(--bg); color: var(--white); font-family: var(--mono
 .sector-pill:hover, .sector-pill.active { border-color: var(--amber); color: var(--amber); }
 
 /* ── TABLE ── */
-.table-wrap { overflow-x: auto; }
+.table-wrap { display: inline-block; min-width: 100%; }
 table { width: 100%; border-collapse: collapse; font-size: .75rem; }
-thead { position: sticky; top: 0; z-index: 2; }
+thead { position: sticky; top: 0; z-index: 2; background: #0d0d00; }
 th {
   background: #0d0d00; color: var(--amber); font-size: .54rem; font-weight: 700;
   letter-spacing: .10em; text-transform: uppercase; padding: 5px 7px;
@@ -281,8 +297,8 @@ tr.row-updated td { color: var(--green2) !important; animation: none; }
         </select>
         <span class="sidebar-label">RSI Period</span>
         <select class="ctrl-select" id="rsiPeriod">
-          <option value="7" selected>7</option>
-          <option value="14">14</option>
+          <option value="7">7</option>
+          <option value="14" selected>14</option>
         </select>
         <span class="sidebar-label">Min Avg Volume</span>
         <input class="ctrl-input" id="minVol" type="number" value="0" step="10000">
@@ -309,6 +325,13 @@ tr.row-updated td { color: var(--green2) !important; animation: none; }
         <div class="flash" id="calibFlash"></div>
       </div>
 
+      <div class="sidebar-section" id="alertSection">
+        <span class="sidebar-label">🔔 Alerts</span>
+        <div id="alertFlashBar" style="min-height:18px;font-size:.62rem;color:var(--green);"></div>
+        <button class="btn-sm" onclick="loadAlertsList()">View Active Alerts</button>
+        <div id="alertsList" style="margin-top:6px;font-size:.59rem;color:var(--muted);display:none;max-height:120px;overflow-y:auto;"></div>
+      </div>
+
       <div class="sidebar-section">
         <span class="sidebar-label">Navigate</span>
         <a href="/options" style="text-decoration:none"><button class="btn-sm">⚙ Options Intelligence</button></a>
@@ -324,6 +347,8 @@ tr.row-updated td { color: var(--green2) !important; animation: none; }
 
     <!-- ══════════ MAIN CONTENT ══════════ -->
     <div class="content">
+      <!-- ── STATIC HEADER: title, filters, pills, tabs — does NOT scroll ── -->
+      <div style="flex-shrink:0">
       <div class="page-title">
         <span>EQUITY SCREENER</span>
         <span id="loadingSpinner" style="display:none"><span class="spinner"></span></span>
@@ -343,6 +368,7 @@ tr.row-updated td { color: var(--green2) !important; animation: none; }
         <select class="filter-select" id="sortSelect" onchange="applyClientSort()">
           <option value="CompositeRank">Composite Rank</option>
           <option value="Score">Score</option>
+          <option value="PreMoveRank">PreMove Rank ★</option>
           <option value="CoilingScore">Coiling Score ★</option>
           <option value="CoilStreakDays">Coil Streak</option>
           <option value="EMI">EMI</option>
@@ -386,9 +412,12 @@ tr.row-updated td { color: var(--green2) !important; animation: none; }
         <button class="view-tab" onclick="switchView('trade')">◈ Trade</button>
         <button class="view-tab" onclick="switchView('factor')">⬡ Factors</button>
         <button class="view-tab" onclick="switchView('coiling')" style="color:var(--green)">◎ Coiling</button>
+        <button class="view-tab" onclick="switchView('premove')" style="color:var(--cyan)">★ PreMove</button>
       </div>
+      </div><!-- /static header -->
 
       <!-- Table (columns change per view) -->
+      <div class="table-scroll-outer">
       <div class="table-wrap">
         <table id="screenerTable">
           <thead id="screenerHead"><tr><th colspan="5" style="color:var(--muted);font-weight:400">Run extraction to populate the screener.</th></tr></thead>
@@ -396,6 +425,7 @@ tr.row-updated td { color: var(--green2) !important; animation: none; }
             <tr><td colspan="5" class="empty-state">Run extraction to populate the screener.</td></tr>
           </tbody>
         </table>
+      </div>
       </div>
     </div><!-- /content -->
   </div><!-- /main-area -->
@@ -411,7 +441,10 @@ tr.row-updated td { color: var(--green2) !important; animation: none; }
       </div>
       <div style="display:flex;gap:8px;align-items:center">
         <div class="quick-links" id="quickLinks"></div>
-        <button class="modal-close" onclick="closeModal()">✕ Close</button>
+        <div style="display:flex;gap:6px;align-items:center">
+          <button class="btn-sm" id="modalAlertBtn" onclick="setAlertForCurrentStock()" style="display:none;font-size:.59rem">🔔 Set Alert</button>
+          <button class="modal-close" onclick="closeModal()">✕ Close</button>
+        </div>
       </div>
     </div>
     <div class="modal-tabs">
@@ -518,7 +551,7 @@ const COLS = {
   Rank:        { label:'#',          fmt: r => r.Rank ?? '—',                              align:'L' },
   Ticker:      { label:'Ticker',     fmt: r => tickerCell(r),                               align:'L' },
   Sector:      { label:'Sector',     fmt: r => `<span style="color:var(--dim)">${r.Sector||'—'}</span>`, align:'L' },
-  SetupType:   { label:'Setup',      fmt: r => setupBadge(r.SetupType),                    align:'L' },
+  SetupType:   { label:'Setup',      fmt: r => setupBadge(r.SetupType, r),                 align:'L' },
   Horizon:     { label:'Horizon',    fmt: r => horizonBadge(r.Horizon),                    align:'L' },
   // Core scores
   Score:       { label:'Score',      fmt: r => `<span class="score-cell" style="color:${sc(r.Score)}">${fv(r.Score,1)}</span>`, align:'R' },
@@ -573,6 +606,12 @@ const COLS = {
     return `<span style="color:${c};font-weight:700">${fv(v,0)}</span>${streak}`;
   }, align:'R' },
   CoilStreakDays:{ label:'Streak',   fmt: r => r.CoilStreakDays > 0 ? `<span style="color:var(--cyan)">${r.CoilStreakDays}d</span>` : '—', align:'R' },
+  PreMoveRank:  { label:'PreMove★', fmt: r => {
+    if (r.PreMoveRank == null) return '—';
+    const v = parseFloat(r.PreMoveRank);
+    const c = v >= 70 ? 'var(--green2)' : v >= 50 ? 'var(--green)' : v >= 30 ? 'var(--amber2)' : 'var(--dim)';
+    return `<span style="color:${c};font-weight:700">${fv(v,1)}</span>`;
+  }, align:'R', tip:'PreMoveRank: composite pre-move score (CoilingScore×VCP×CLV×Proximity×Streak). Sort by this to find tomorrow\'s breakout today.' },
   MA_Struct:   { label:'MA',         fmt: r => barFmt(r.MA_Struct, 10),                    align:'R' },
   Proximity:   { label:'Prox',       fmt: r => barFmt(r.Proximity, 10),                    align:'R' },
   ATR_Pot:     { label:'ATRPot',    fmt: r => barFmt(r.ATR_Pot, 5),                        align:'R' },
@@ -605,7 +644,25 @@ const COLS = {
   KellyFrac:   { label:'Kelly%',   fmt: r => r.KellyFrac != null ? `${fv(r.KellyFrac*100,1)}%` : '—', align:'R' },
   // Misc
   Patterns:    { label:'Candles',   fmt: r => `<span style="color:var(--amber2);font-size:.56rem">${r.Patterns||'—'}</span>`, align:'L' },
-  SoftPenalty: { label:'Penalty',   fmt: r => r.SoftPenalty != null ? `<span style="color:${r.SoftPenalty>THRESH.PENALTY_HIGH?'var(--red)':r.SoftPenalty>THRESH.PENALTY_MID?'var(--amber)':'var(--dim)'}">-${fv(r.SoftPenalty,1)}</span>` : '—', align:'R' },
+  SoftPenalty: { label:'Penalty',   fmt: r => {
+    if (r.SoftPenalty == null) return '—';
+    const c = r.SoftPenalty > THRESH.PENALTY_HIGH ? 'var(--red)' : r.SoftPenalty > THRESH.PENALTY_MID ? 'var(--amber)' : r.SoftPenalty > 0 ? 'var(--dim)' : 'var(--green)';
+    const label = r.SoftPenalty === 0 ? '✔' : `-${fv(r.SoftPenalty,1)}`;
+    let tip = '';
+    try {
+      const pd = typeof r.penalties === 'string' ? JSON.parse(r.penalties) : (r.penalties || {});
+      tip = Object.entries(pd).filter(([,v])=>v>0).sort((a,b)=>b[1]-a[1]).map(([k,v])=>`${k}: ${parseFloat(v).toFixed(1)}`).join(' | ');
+    } catch(e) {}
+    return `<span style="color:${c}" title="${tip || 'No penalties'}">${label}</span>`;
+  }, align:'R' },
+  DaysSinceBreak: { label:'DaysAgo', fmt: r => {
+    if (r.DaysSinceBreak == null) return '—';
+    const d = r.DaysSinceBreak;
+    if (d === 0) return '<span style="color:var(--green)">fresh</span>';
+    const c = d >= 4 ? 'var(--red)' : d >= 2 ? 'var(--amber)' : 'var(--dim)';
+    return `<span style="color:${c}" title="Price crossed pivot ${d} bars ago">${d}d ago</span>`;
+  }, align:'R' },
+  WeeklyTrendUp: { label:'Wk↑',    fmt: r => r.WeeklyTrendUp == null ? '—' : r.WeeklyTrendUp ? '<span style="color:var(--green)">✔</span>' : '<span style="color:var(--red)">✗</span>', align:'R' },
   BasePos:     { label:'Base%',     fmt: r => r.BasePos != null ? `${fv(r.BasePos*100,1)}%` : '—', align:'R' },
   LiquidityScore:{ label:'Liq',    fmt: r => r.LiquidityScore != null ? fv(r.LiquidityScore,3) : '—', align:'R' },
   ADVTurnover: { label:'ADV(Cr)',   fmt: r => r.ADVTurnover != null ? `₹${fv(r.ADVTurnover,1)}Cr` : '—', align:'R' },
@@ -618,9 +675,10 @@ const COLS = {
 // ── VIEW COLUMN SETS ─────────────────────────────────────────────
 const VIEW_COLS = {
   core: [
-    'Rank','Ticker','Sector','SetupType','Horizon','Score','EMI','CompositeRank',
+    'Rank','Ticker','Sector','SetupType','Horizon','Score','EMI','CompositeRank','PreMoveRank',
     'LTP','DayChg_pct','LiveVol','RSI7','ATR%','RR',
     'RS','CSRank5d','RS_Sector','MA_Struct',
+    'CoilingScore','CoilStreakDays','DaysSinceBreak','SoftPenalty','WeeklyTrendUp',
     'VolCont','BBSqueeze','VolDryUp','CLVAccum','VCP','BreakoutProb','SignalPersist',
     'Proximity','Candle','Patterns',
     'UpVolSkew','CPR','SpreadPts','ATRExpOnset','OI_Buildup','VolVelocity','RSDivergence',
@@ -631,7 +689,7 @@ const VIEW_COLS = {
     'RSI7','VolRatio','VolZ',
     'BBSqueeze','VolDryUp','CLVAccum','VCP','VCP_Detected','BreakoutProb',
     'UpVolSkew','CPR','SpreadPts','ATRExpOnset','OI_Buildup','RSDivergence',
-    'Sweep','VWMA20_OK','Stability','HorizonNote',
+    'Sweep','VWMA20_OK','Stability','DaysSinceBreak','SoftPenalty','WeeklyTrendUp','AboveSMA200','HorizonNote',
   ],
   factor: [
     'Rank','Ticker','Sector','SetupType','Score',
@@ -640,8 +698,8 @@ const VIEW_COLS = {
     'VCP','VCP_Contraction','VCP_VolComp','VCP_VolDryup','VCP_Tightness','VCP_Position',
     'Coil','MA_Struct','Proximity','ATR_Pot','Candle','Darvas','VCVE','BasePos',
     'UpVolSkew','CPR','SpreadPts','ATRExpOnset','OI_Buildup','VolVelocity','RSDivergence',
-    'SoftPenalty','LiquidityScore','ADVTurnover','SignalPersist','Stability',
-    'AboveSMA200','Pos52W','EMA9','EMA20','DarvasInBox',
+    'SoftPenalty','CoilStreakDays','LiquidityScore','ADVTurnover','SignalPersist','Stability',
+    'AboveSMA200','WeeklyTrendUp','Pos52W','EMA9','EMA20','DarvasInBox',
     'RS_Accel','AccelScore',
     'Sweep','VWMA20_OK','Patterns',
   ],
@@ -654,6 +712,19 @@ const VIEW_COLS = {
     'BBSqueeze','VolDryUp','CLVAccum','VCP','VCP_Detected',
     'Coil','SpreadPts','VolCont','BreakoutProb',
     'RS','RS_Sector','MA_Struct','Proximity',
+    'DaysSinceBreak','SoftPenalty','WeeklyTrendUp','AboveSMA200',
+    'Entry','Stop','RR','HorizonNote',
+  ],
+  // ── PreMove view: ranked by PreMoveRank composite ─────────────────
+  // Shows PreMoveRank (CoilingScore×VCP×CLV×Proximity×Streak) first.
+  // Use this to hunt for stocks about to break out BEFORE it happens.
+  premove: [
+    'Rank','Ticker','Sector','SetupType','PreMoveRank','CoilingScore','CoilStreakDays',
+    'Horizon','Score','LTP','DayChg_pct','ATR%',
+    'VCP','VCP_Detected','CLVAccum','BBSqueeze','VolDryUp',
+    'Proximity','Coil','SpreadPts',
+    'RS','RS_Sector','MA_Struct',
+    'OI_Buildup','DaysSinceBreak','SoftPenalty','WeeklyTrendUp',
     'Entry','Stop','RR','HorizonNote',
   ],
 };
@@ -766,18 +837,41 @@ function barFmt(v, max) {
   const c = pct >= THRESH.BAR_PCT_HIGH ? 'var(--green)' : pct >= THRESH.BAR_PCT_MID ? 'var(--amber)' : 'var(--red)';
   return `<span style="color:${c}">${fv(v,1)}</span><span style="color:var(--dim);font-size:.54rem">/${max}</span>`;
 }
-function setupBadge(v) {
+function setupBadge(v, row) {
   if (!v) return '—';
   const map = {
     Breakout:  'var(--blue)',
-    Coiling:   'var(--green)',    // pre-move compression
-    'PB-EMA':  'var(--cyan)',     // at EMA support — highest-quality pullback
-    'PB-Dry':  'var(--purple)',   // vol drying, deeper correction
-    'PB-Deep': 'var(--amber)',    // still correcting, not at support
-    Base:      'var(--dim)',      // range-bound, no signal
+    Coiling:   'var(--green)',
+    'PB-EMA':  'var(--cyan)',
+    'PB-Dry':  'var(--purple)',
+    'PB-Deep': 'var(--amber)',
+    Base:      'var(--dim)',
     Reversal:  'var(--amber2)',
   };
-  return `<span style="color:${map[v]||'var(--muted)'};font-size:.58rem;font-weight:700">${v}</span>`;
+  let badge = '';
+  if (v === 'Breakout' && row) {
+    const mins = row.BreakoutMinsAgo;
+    let col = map.Breakout;
+    let freshnessLabel = '';
+    if (mins != null) {
+      if (mins < 90)       { col = 'var(--green)';  freshnessLabel = ` <span style="font-size:.52rem;opacity:.8">(${mins}m ago)</span>`; }
+      else if (mins < 180) { col = 'var(--amber)';  freshnessLabel = ` <span style="font-size:.52rem;opacity:.8">(${mins}m ago)</span>`; }
+      else                 { col = 'var(--red)';    freshnessLabel = ` <span style="font-size:.52rem;opacity:.8">(${mins}m ago)</span>`; }
+    }
+    badge = `<span style="color:${col};font-size:.58rem;font-weight:700">${v}</span>${freshnessLabel}`;
+  } else if (v === 'Coiling' && row && row.VolBuildPct != null) {
+    const pct = Math.min(row.VolBuildPct, 1.5);
+    const barPct = Math.min(pct / 1.5 * 100, 100).toFixed(0);
+    const barCol = pct >= 0.70 ? 'var(--amber2)' : 'var(--green)';
+    const pulseStyle = pct >= 0.70 ? 'animation:pulse 1s ease-in-out infinite alternate;' : '';
+    badge = `<span style="color:var(--green);font-size:.58rem;font-weight:700">${v}</span>` +
+      `<div style="width:38px;height:3px;background:var(--border);margin-top:2px;border-radius:2px;display:inline-block;vertical-align:middle;margin-left:4px">` +
+      `<div style="width:${barPct}%;height:100%;background:${barCol};border-radius:2px;${pulseStyle}"></div></div>` +
+      `<span style="font-size:.50rem;color:${barCol};margin-left:3px">${(pct*100).toFixed(0)}%</span>`;
+  } else {
+    badge = `<span style="color:${map[v]||'var(--muted)'};font-size:.58rem;font-weight:700">${v}</span>`;
+  }
+  return badge;
 }
 function horizonBadge(v) {
   if (!v) return '—';
@@ -814,6 +908,7 @@ function signalDots(r) {
     { t:'RSDivergence', v: r.RSDivergence > 0 },
     { t:'VCP_Detected', v: r.VCP_Detected },
     { t:'Coiling',      v: r.SetupType === 'Coiling' || (r.CoilingScore != null && r.CoilingScore >= 58) },
+    { t:'WeeklyTrend ↑', v: r.WeeklyTrendUp !== false },  // grey only when explicitly false
     { t:'VolClimax ⚠',  v: !r.VolClimax },   // green = NOT in climax; red = climax warning
   ].map(d => `<span class="sig ${d.v ? 'sig-g' : 'sig-n'}" title="${d.t}"></span>`).join('');
 }
@@ -922,6 +1017,29 @@ function _startSSE() {
     try {
       const updated = JSON.parse(e.data);   // { TICKER: { ltp, chg, vol }, … }
       _applyLivePricePatch(updated);
+    } catch(_) {}
+  });
+
+  // ── Alert SSE event ────────────────────────────────────────────────────────
+  _sse.addEventListener('alert', e => {
+    try {
+      const a = JSON.parse(e.data);
+      // Browser notification
+      if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
+        new Notification(`${a.symbol} — Alert fired`, {
+          body: `${a.cond} triggered${a.value ? ' at ₹' + a.value : ''}`,
+          icon: '/static/favicon.ico'
+        });
+      }
+      // In-app flash
+      const bar = document.getElementById('alertFlashBar');
+      if (bar) {
+        bar.textContent = `🔔 ${a.symbol}: ${a.cond} fired`;
+        bar.style.color = 'var(--green)';
+        setTimeout(() => { if(bar) bar.textContent = ''; }, 12000);
+      }
+      // Refresh the alerts list if it's open
+      if (document.getElementById('alertsList').style.display !== 'none') loadAlertsList();
     } catch(_) {}
   });
 
@@ -1175,18 +1293,40 @@ function _scheduleRender() {
 // ════════════════════════════════════════════════════
 // Called by the Sort dropdown. Sorts _rows in-place and re-renders.
 // loadScreener() is only called on horizon change (a server-side filter).
-function applyClientSort() {
-  const col = document.getElementById('sortSelect').value;
-  if (!_rows.length) return;
+// ════════════════════════════════════════════════════
+// SORT — unified single path
+// BUG 9 FIX: Previously applyClientSort() sorted _rows globally while sortBy()
+// sorted only _filteredRows, causing conflicting state when both were used
+// (e.g. filter by sector then click a column header, then change dropdown).
+// Now all sorting goes through setSort() which updates both _sortCol/_sortAsc
+// state and the #sortSelect dropdown, then calls applyFilters() → renderTable().
+// ════════════════════════════════════════════════════
+function setSort(col, asc) {
+  // asc=undefined means toggle if same col, default desc for new col
+  if (asc === undefined) {
+    asc = (_sortCol === col) ? !_sortAsc : false;
+  }
+  _sortCol = col;
+  _sortAsc = asc;
+  // Sync dropdown
+  const sel = document.getElementById('sortSelect');
+  if (sel && [...sel.options].some(o => o.value === col)) sel.value = col;
+  // Sort the full _rows array so any filter change preserves sort order
   _rows.sort((a, b) => {
     const av = a[col], bv = b[col];
     if (av == null && bv == null) return 0;
     if (av == null) return 1; if (bv == null) return -1;
-    if (typeof av === 'string') return bv.localeCompare(av);
-    return bv - av; // descending
+    if (typeof av === 'string') return _sortAsc ? av.localeCompare(bv) : bv.localeCompare(av);
+    return _sortAsc ? (av - bv) : (bv - av);
   });
   _rows.forEach((r, i) => r.Rank = i + 1);
-  applyFilters();
+  applyFilters(); // rebuilds _filteredRows then renders
+}
+
+function applyClientSort() {
+  const col = document.getElementById('sortSelect').value;
+  if (!_rows.length) return;
+  setSort(col, false); // always descending when using dropdown
 }
 
 // ════════════════════════════════════════════════════
@@ -1194,7 +1334,7 @@ function applyClientSort() {
 // ════════════════════════════════════════════════════
 function switchView(name) {
   _currentView = name;
-  const tabNames = ['core','trade','factor','coiling'];
+  const tabNames = ['core','trade','factor','coiling','premove'];
   document.querySelectorAll('.view-tab').forEach((t, i) =>
     t.classList.toggle('active', tabNames[i] === name));
   // When switching to Coiling view, auto-sort by CoilingScore so the
@@ -1203,30 +1343,27 @@ function switchView(name) {
     const sel = document.getElementById('sortSelect');
     if (sel && sel.value !== 'CoilingScore') {
       sel.value = 'CoilingScore';
-      applyClientSort();
-      return; // applyClientSort calls applyFilters → renderTable
     }
+    setSort('CoilingScore', false);
+    return;
+  }
+  // When switching to PreMove view, auto-sort by PreMoveRank
+  if (name === 'premove') {
+    const sel = document.getElementById('sortSelect');
+    if (sel && sel.value !== 'PreMoveRank') {
+      sel.value = 'PreMoveRank';
+    }
+    setSort('PreMoveRank', false);
+    return;
   }
   renderTable(_filteredRows);
 }
 
-// ════════════════════════════════════════════════════
-// SORT
-// ════════════════════════════════════════════════════
 function sortBy(col) {
-  if (_sortCol === col) _sortAsc = !_sortAsc;
-  else { _sortCol = col; _sortAsc = false; }
-  _filteredRows.sort((a, b) => {
-    const av = a[col], bv = b[col];
-    if (av == null) return 1; if (bv == null) return -1;
-    if (typeof av === 'string') return _sortAsc ? av.localeCompare(bv) : bv.localeCompare(av);
-    return _sortAsc ? (av - bv) : (bv - av);
-  });
-  // Sync the Sort dropdown to reflect the active column (best-effort — only if the key exists in options)
-  const sel = document.getElementById('sortSelect');
-  if ([...sel.options].some(o => o.value === col)) sel.value = col;
-  renderTable(_filteredRows);
+  // Column header click — toggle asc/desc, use unified setSort path
+  setSort(col, undefined);
 }
+
 
 // ════════════════════════════════════════════════════
 // TABLE RENDER — driven by COLS & VIEW_COLS
@@ -1283,6 +1420,10 @@ async function openStock(ticker) {
   document.getElementById('stockModal').classList.add('open');
   document.body.style.overflow = 'hidden';
 
+  // Show alert button
+  const alertBtn = document.getElementById('modalAlertBtn');
+  if (alertBtn) alertBtn.style.display = '';
+
   const row = _rows.find(r => r.Ticker === ticker);
   if (row) {
     renderOverview(row);
@@ -1298,6 +1439,64 @@ async function openStock(ticker) {
     document.getElementById('explainContent').innerHTML =
       `<div class="empty-state" style="color:var(--muted)">Run screener first for explanation.<br><small>${e.message}</small></div>`;
   }
+}
+
+// ── ALERTS ───────────────────────────────────────────────────────
+async function setAlertForCurrentStock() {
+  if (!_currentStock) return;
+  const row = _rows.find(r => r.Ticker === _currentStock);
+  const entry = row?.Entry;
+  const setupType = row?.SetupType;
+  const promises = [];
+  if (entry) {
+    promises.push(fetch('/api/alerts', {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ symbol: _currentStock, cond: 'price_above', value: entry })
+    }));
+  }
+  // vol_confirm alert for Coiling stocks; re-alert for all setups
+  promises.push(fetch('/api/alerts', {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ symbol: _currentStock, cond: 'vol_confirm', value: 0 })
+  }));
+  await Promise.all(promises);
+  const bar = document.getElementById('alertFlashBar');
+  if (bar) {
+    bar.textContent = `🔔 Alert set for ${_currentStock}`;
+    bar.style.color = 'var(--green)';
+    setTimeout(() => { if(bar) bar.textContent = ''; }, 8000);
+  }
+  // Request browser notification permission if not already granted
+  if (typeof Notification !== 'undefined' && Notification.permission === 'default') {
+    Notification.requestPermission();
+  }
+  loadAlertsList();
+}
+
+async function loadAlertsList() {
+  const el = document.getElementById('alertsList');
+  if (!el) return;
+  el.style.display = '';
+  try {
+    const data = await fetch('/api/alerts').then(r => r.json());
+    const alerts = (data.alerts || []).filter(a => !a.fired);
+    if (!alerts.length) {
+      el.innerHTML = '<span style="color:var(--dim)">No active alerts.</span>';
+      return;
+    }
+    el.innerHTML = alerts.map(a => `
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:3px;border-bottom:1px solid var(--border);padding-bottom:2px">
+        <span><strong style="color:var(--amber)">${a.symbol}</strong> <span style="color:var(--muted)">${a.cond}</span>${a.value ? ' ₹'+a.value : ''}</span>
+        <button onclick="deleteAlert(${a.id})" style="background:none;border:none;color:var(--red);cursor:pointer;font-size:.65rem;padding:0 2px">✕</button>
+      </div>`).join('');
+  } catch(e) {
+    el.innerHTML = '<span style="color:var(--red)">Error loading alerts</span>';
+  }
+}
+
+async function deleteAlert(id) {
+  await fetch('/api/alerts/' + id, { method: 'DELETE' });
+  loadAlertsList();
 }
 
 // ── OVERVIEW ─────────────────────────────────────────────────────
@@ -1331,6 +1530,7 @@ function renderOverview(r) {
     ['Coiling Score',r.CoilingScore!=null?fv(r.CoilingScore,0)+'/100':'—',
       r.CoilingScore>=70?'var(--green2)':r.CoilingScore>=55?'var(--green)':r.CoilingScore>=40?'var(--amber)':'var(--dim)'],
     ['Coil Streak',  r.CoilStreakDays>0?r.CoilStreakDays+'d':'—',      r.CoilStreakDays>=3?'var(--cyan)':'var(--dim)'],
+    ['Days Since BO', r.DaysSinceBreak===0?'Fresh now':r.DaysSinceBreak!=null?(r.DaysSinceBreak+'d ago'):'—', r.DaysSinceBreak===0?'var(--green)':r.DaysSinceBreak>=4?'var(--red)':r.DaysSinceBreak>=2?'var(--amber)':'var(--dim)'],
     ['Horizon',      r.Horizon||'—',                                   'var(--amber2)'],
     ['RSI',          fv(r.RSI7,1),                                     r.RSI7>THRESH.RSI_OVERBOUGHT?'var(--red)':r.RSI7<THRESH.RSI_OVERSOLD?'var(--blue)':''],
     ['ATR%',         r['ATR%']!=null?fv(r['ATR%'],2)+'%':'—',         ''],
@@ -1344,6 +1544,7 @@ function renderOverview(r) {
     ['Stability',    fv(r.Stability,2),                                r.Stability>0.6?'var(--green)':r.Stability<0.4?'var(--red)':''],
     ['Pos 52W',      r.Pos52W!=null?fv(r.Pos52W*100,1)+'%':'—',       ''],
     ['Above SMA200', r.AboveSMA200?'YES':'NO',                         r.AboveSMA200?'var(--green)':'var(--red)'],
+    ['Weekly ↑',     r.WeeklyTrendUp==null?'—':r.WeeklyTrendUp?'YES':'NO', r.WeeklyTrendUp==null?'':r.WeeklyTrendUp?'var(--green)':'var(--red)'],
     ['EMA9',         r.EMA9!=null?'₹'+fv(r.EMA9,2):'—',               ''],
     ['EMA20',        r.EMA20!=null?'₹'+fv(r.EMA20,2):'—',             ''],
     ['Patterns',     r.Patterns||'—',                                  'var(--amber2)'],
@@ -1357,7 +1558,7 @@ function renderOverview(r) {
     ['ATR Exp',      fv(r.ATRExpOnset,1),                              ''],
     ['Sweep',        r.Sweep?'YES':'—',                                 r.Sweep?'var(--cyan)':'var(--dim)'],
     ['VWAP↑',        r.VWMA20_OK?'YES':'—',                           r.VWMA20_OK?'var(--green)':'var(--dim)'],
-    ['Soft Penalty', '-'+fv(r.SoftPenalty,1),                          r.SoftPenalty>THRESH.PENALTY_HIGH?'var(--red)':'var(--muted)'],
+    ['Soft Penalty', r.SoftPenalty===0?'✔ Clean':'-'+fv(r.SoftPenalty,1), r.SoftPenalty>THRESH.PENALTY_HIGH?'var(--red)':r.SoftPenalty===0?'var(--green)':'var(--muted)'],
     ['Liquidity',    r.LiquidityScore!=null?fv(r.LiquidityScore,3):'—',''],
     ['ADV',          r.ADVTurnover!=null?'₹'+fv(r.ADVTurnover,1)+'Cr':'—',''],
     ['Horizon Note', r.HorizonNote||'—',                               'var(--muted)'],
@@ -1391,7 +1592,23 @@ function renderOverview(r) {
           <div class="score-item-label">${lbl}</div>
           <div class="score-item-val" style="${c ? 'color:' + c : ''}">${val}</div>
         </div>`).join('')}
-    </div>`;
+    </div>
+    ${(() => {
+      let penObj = {};
+      try { penObj = typeof r.penalties === 'string' ? JSON.parse(r.penalties) : (r.penalties || {}); } catch(e) {}
+      const active = Object.entries(penObj).filter(([,v]) => Math.abs(v) > 0.05).sort((a,b) => b[1]-a[1]);
+      if (!active.length) return '<div style="margin-top:8px;font-size:.62rem;color:var(--green)">✔ No active penalties</div>';
+      return '<div style="margin-top:10px"><div style="font-size:.6rem;color:var(--muted);text-transform:uppercase;letter-spacing:.08em;margin-bottom:5px">Active Penalties</div>' +
+        active.map(([k,v]) => {
+          const c = v > 10 ? 'var(--red)' : v > 5 ? 'var(--amber)' : 'var(--dim)';
+          const bar = Math.min(Math.abs(v)/20*100, 100).toFixed(0);
+          return `<div style="display:flex;align-items:center;gap:8px;margin-bottom:3px">
+            <div style="font-size:.63rem;color:var(--muted);width:140px;flex-shrink:0">${k.replace(/_/g,' ')}</div>
+            <div style="flex:1;height:3px;background:#222;border-radius:2px"><div style="height:3px;background:${c};width:${bar}%;border-radius:2px"></div></div>
+            <div style="font-size:.63rem;color:${c};width:36px;text-align:right">-${parseFloat(v).toFixed(1)}</div>
+          </div>`;
+        }).join('') + '</div>';
+    })()}`;
 }
 
 // ── TRADE ─────────────────────────────────────────────────────────
