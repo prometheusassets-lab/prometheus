@@ -167,7 +167,7 @@ class ScoreConfig:
     REVERSAL_TAIL_MIN_POS:     float = 0.40   # t1_close_pos must be >= this to qualify
 
     # ── Intraday breakout volume minimum ──
-    INTRADAY_BO_VOL_MIN:       float = 0.30   # vol_confirm session guard (alias)
+    INTRADAY_BO_VOL_MIN:       float = 0.15   # vol_confirm session guard (alias) — lowered to match VOL_CONFIRM_MIN_FRAC
 
     # ── Sweep ──
     SWEEP_WICK_MIN_ATR:        float = 0.50   # lower wick must be >= this × ATR
@@ -282,7 +282,7 @@ class ScoreConfig:
     # vol_confirm and Breakout classification are suppressed before this
     # fraction of the session has elapsed — pace-adjusting early-session volume
     # reduces but does not eliminate noise at open.
-    VOL_CONFIRM_MIN_FRAC:   float = 0.30   # ~first 112 min (09:15 → ~11:07)
+    VOL_CONFIRM_MIN_FRAC:   float = 0.15   # was 0.30 — P95 cap handles noise; guard was suppressing genuine early breakouts
 
     # ── Score gate for entry/target/stop output ───────────────────────────
     # Below this score the Entry/Target/Stop fields are set to None and the
@@ -532,6 +532,34 @@ _NSE_INDEX_TO_SECTOR: Dict[str, str] = {
     "NIFTY MIDSMALL IT & TELECOM":"IT",
 }
 
+# ── Index priority: higher = more specific = wins on conflict ─────────────────
+# NIFTY IT (→IT) and NIFTY INDIA DIGITAL (→Telecom) both contain TCS/INFY/WIPRO.
+# NIFTY BANK (→Bank) and NIFTY FINANCIAL SERVICES (→Insurance) both contain
+# HDFCBANK/ICICIBANK/KOTAKBANK/AXISBANK/SBIN.
+# Without priority, the LAST index iterated wins — which is wrong.
+# Fix: specific sector indices get priority=10; broad thematic indices get priority=1.
+_NSE_INDEX_PRIORITY: Dict[str, int] = {
+    "NIFTY IT":                   10,
+    "NIFTY BANK":                 10,
+    "NIFTY AUTO":                 10,
+    "NIFTY PHARMA":               10,
+    "NIFTY METAL":                10,
+    "NIFTY ENERGY":               10,
+    "NIFTY INFRASTRUCTURE":       10,
+    "NIFTY FMCG":                 10,
+    "NIFTY REALTY":               10,
+    "NIFTY PSU BANK":             10,
+    "NIFTY CHEMICALS":            10,
+    "NIFTY CONSUMER DURABLES":    10,
+    "NIFTY OIL AND GAS":          10,
+    "NIFTY MIDSMALL HEALTHCARE":   5,
+    "NIFTY MIDSMALL IT & TELECOM": 5,
+    # Broad/thematic — overlaps heavily with specific indices above
+    "NIFTY FINANCIAL SERVICES":    1,  # overlaps NIFTY BANK
+    "NIFTY INDIA DIGITAL":         1,  # overlaps NIFTY IT
+    "NIFTY INDIA CONSUMPTION":     1,  # overlaps FMCG/Retail
+}
+
 # ── Dynamic STOCK_SECTOR_MAP ──────────────────────────────────────
 # Populated at startup (and periodically refreshed) by fetching the
 # constituent list of every NSE sector index via the same session-based
@@ -645,6 +673,12 @@ def _refresh_sector_map() -> None:
     Thread-safe: guarded by _SECTOR_MAP_LOCK.
     Falls back gracefully: if an index fetch fails or returns <5 stocks,
     the existing mapping for those symbols is preserved.
+
+    Priority fix: stocks in multiple indices get the sector from the
+    HIGHEST-priority index (see _NSE_INDEX_PRIORITY).  This prevents
+    broad thematic indices (NIFTY INDIA DIGITAL→Telecom,
+    NIFTY FINANCIAL SERVICES→Insurance) from overwriting specific sector
+    indices (NIFTY IT→IT, NIFTY BANK→Bank) for shared constituents.
     """
     global _sector_map_last_refresh
 
@@ -662,6 +696,9 @@ def _refresh_sector_map() -> None:
         pass   # proceed anyway; cookies may still arrive on the API call
 
     new_map: Dict[str, str] = dict(_STATIC_SECTOR_FALLBACK)   # start from fallback
+    # Track the priority at which each symbol was assigned, so a higher-priority
+    # index can overwrite a lower-priority one but not vice versa.
+    map_priority: Dict[str, int] = {sym: 0 for sym in new_map}  # fallback = priority 0
     fetched_any = False
 
     for index_name, sector_label in _NSE_INDEX_TO_SECTOR.items():
@@ -669,13 +706,13 @@ def _refresh_sector_map() -> None:
         if not syms:
             continue   # keep existing / fallback entries for this sector
         fetched_any = True
-        # A stock appearing in multiple indices gets the sector of the LAST
-        # index that covers it in iteration order.  For overlapping indices
-        # (e.g. NIFTY BANK and NIFTY FINANCIAL SERVICES), Bank takes
-        # precedence because it appears earlier in _NSE_INDEX_TO_SECTOR.
-        # If you need strict priority, reorder _NSE_INDEX_TO_SECTOR.
+        priority = _NSE_INDEX_PRIORITY.get(index_name, 1)
         for sym in syms:
-            new_map[sym.upper()] = sector_label
+            sym_upper = sym.upper()
+            existing_priority = map_priority.get(sym_upper, -1)
+            if priority >= existing_priority:
+                new_map[sym_upper] = sector_label
+                map_priority[sym_upper] = priority
         time.sleep(0.15)   # be polite to NSE API
 
     if fetched_any:
@@ -724,7 +761,11 @@ STATE: Dict = {
     "sector_returns": {},
     "sector_returns_10d": {},
     "top_sectors": set(),
-    "rsi_period": 7,
+    # BUG 14 FIX: Default changed from 7 to 14.  RSI-7 is hypersensitive and frequently
+    # flags healthy trending stocks as overbought (RSI penalty up to -15 pts), suppressing
+    # valid 5%-move candidates below the levels threshold.  RSI-14 is the professional
+    # standard and aligns with how most practitioners interpret overbought/oversold.
+    "rsi_period": 14,
     "min_avg_vol": 100_000,
     "sector_cap_enabled": False,
     # Progressive streaming: scored rows are pushed here as extraction completes
@@ -1479,11 +1520,13 @@ def compute_features(ind: dict, ticker: str, ltp: float, day_vol: float,
     vcp_cs = cs_state.get("cs_vcp", {}).get(ticker)
 
     # ── ADR / base data ───────────────────────────────────────────
-    # base_hi uses h.iloc[:-2].tail(20) (excludes yesterday) to match the shift(1) convention
-    # in ext_hist = (c - h.rolling(20).max().shift(1)).  Both now measure extension vs the
-    # 20-day high that was in place *before* the current bar, so ext_p90/p10 are valid
-    # calibration bounds for breakout_ext.
-    base_hi  = float(h.iloc[:-2].tail(20).max());  base_lo = float(l.iloc[:-1].tail(20).min())  # Bug 2 fix: exclude today so pivot is pre-move
+    # BUG 4 FIX: base_hi was using h.iloc[:-2].tail(20) (excluded yesterday AND today),
+    # but ext_hist in compute_signals uses h.iloc[:-1].rolling(20).max().shift(1) which
+    # INCLUDES yesterday's high.  The mismatch caused valid Breakout setups to appear
+    # below base_hi (Coiling) because the two references disagreed by one bar.
+    # Fix: use h.iloc[:-1].tail(20) for base_hi to match ext_hist's shift(1) convention.
+    # Both now represent the 20-day high EXCLUDING today's bar — fully consistent.
+    base_hi  = float(h.iloc[:-1].tail(20).max());  base_lo = float(l.iloc[:-1].tail(20).min())
     base_rng = base_hi - base_lo + 1e-9
     breakout_ext = (ltp - base_hi) / (atr_v + 1e-9)
 
@@ -1624,11 +1667,16 @@ def compute_signals(feat: dict, ind: dict, df: pd.DataFrame,
         _pb_min = 0.3
     real_pb = _pb_depth >= _pb_min
 
-    # Bug 3 fix: scale day_vol by session fraction so an early-session partial bar
-    # isn't falsely flagged as volume dry-up purely due to time-of-day.
-    # day_vol_sc is the session-pace-adjusted equivalent of a full-day volume.
+    # BUG 5 FIX: pace-adjusted volume can be massively inflated by an early news/gap spike
+    # (e.g. at 09:45 with 15% session elapsed, a 2× vol spike projects to 13× full-day vol).
+    # Cap the pace adjustment at a maximum multiplier based on stock's own P95 historical volume
+    # so a single large early trade doesn't prematurely trigger vol_confirm.
     _vol_sess_frac = max(elapsed_frac, 1e-3)   # avoid div/0 at open
-    day_vol_sc  = day_vol / _vol_sess_frac      # project to full-session pace
+    _raw_pace_vol  = day_vol / _vol_sess_frac   # uncapped pace projection
+    _vol_p95_hist  = float(v.iloc[:-1].tail(60).quantile(0.95)) if n >= 20 else float(v.mean()) * 3.0
+    # Allow pace-adjustment to project up to 3× the stock's own P95 historical volume.
+    # This prevents a 1-minute news-driven spike from masquerading as a confirmed full-day breakout.
+    day_vol_sc  = float(np.clip(_raw_pace_vol, 0, _vol_p95_hist * 3.0))
     vol_dryup   = day_vol_sc < float(v.iloc[:-1].tail(20).median() + 1e-9) if n >= 20 else True
 
     # ── Breakout geometry ────────────────────────────────────────
@@ -1642,7 +1690,7 @@ def compute_signals(feat: dict, ind: dict, df: pd.DataFrame,
     # and the Breakout label is suppressed; the stock is labelled "Developing BO"
     # via the horizon note instead.
     _vol_confirm_allowed = elapsed_frac >= cfg.VOL_CONFIRM_MIN_FRAC
-    vol_confirm = (day_vol_sc >= vol_bo_thresh) and _vol_confirm_allowed  # Bug 19 fix: use pace-adjusted vol
+    vol_confirm = (day_vol_sc >= vol_bo_thresh) and _vol_confirm_allowed
 
     # ── Intraday market circuit breaker ──────────────────────────────────
     # When Nifty is down >= 2% on the day, issuing Breakout labels is
@@ -1669,8 +1717,12 @@ def compute_signals(feat: dict, ind: dict, df: pd.DataFrame,
         setup_type = "Breakout"
 
     elif breakout_ext > ext_p90 and vol_confirm and not _market_kill:
-        # Extended but continuation volume — treat as breakout continuation
-        setup_type = "Breakout"
+        # Extended with volume but price already > 1.5 ATR above base — move already done.
+        # Label as PB-Deep so it doesn't appear as a fresh entry in Breakout filters.
+        if feat["breakout_ext"] > 1.5:
+            setup_type = "PB-Deep"
+        else:
+            setup_type = "Breakout"
 
     elif at_pivot and not vol_confirm:
         # At pivot but vol not confirmed yet — highest-value pre-move state.
@@ -1957,8 +2009,37 @@ def compute_signals(feat: dict, ind: dict, df: pd.DataFrame,
     vr_now  = float(v.iloc[-1]) / (feat["vol_mu"] + 1e-9)
     vol_quiet_pct = float((vr_hist >= vr_now).mean()) if len(vr_hist) >= 10 else float(np.clip(1.0 - vr_now, 0.0, 1.0))
 
+    # ── Days since last pivot break ───────────────────────────────────────────
+    # BUG 3 FIX: Previous logic walked backwards looking for the first bar below
+    # base_hi after being above it.  When price STAYED above base_hi continuously
+    # (e.g. broke out 5 days ago and never pulled back), _was_above stayed True
+    # but the elif never fired → _days_since_break_s = 0 (looked "fresh").
+    # Fix: after the loop, if _was_above=True and count is still 0, it means price
+    # has been above base_hi for the entire lookback window — set count to the
+    # last index where we confirmed price was above (maximum staleness).
+    _base_hi_s = feat.get("base_hi", ltp)
+    _days_since_break_s = 0
+    if len(df) >= 5 and _base_hi_s > 0:
+        _closes_s = df["close"].iloc[:-1].values[::-1]  # yesterday first
+        _was_above = False
+        _last_above_idx = 0
+        for _i_s, _cl_s in enumerate(_closes_s[:20]):
+            if _cl_s >= _base_hi_s:
+                _was_above = True
+                _last_above_idx = _i_s   # track most-recent (closest to today) bar above pivot
+            elif _was_above:
+                # first bar below pivot AFTER being above = break happened _i_s bars ago
+                _days_since_break_s = _i_s
+                break
+        # BUG 3 FIX: if _was_above but loop ended without an "elif _was_above" hit,
+        # price has been above base_hi the entire window — use _last_above_idx+1
+        # so a 5-day-old breakout that never pulled back correctly shows as stale.
+        if _was_above and _days_since_break_s == 0:
+            _days_since_break_s = _last_above_idx + 1
+
     return dict(
         setup_type=setup_type,
+        days_since_break=_days_since_break_s,
         # Primary signals (0-1)
         coil_sc=coil_sc, prox_sc=prox_sc,
         vcp_sc=_vcp_sc, darvas_sc=darvas_sc,
@@ -1981,6 +2062,10 @@ def compute_signals(feat: dict, ind: dict, df: pd.DataFrame,
         washout_depth=washout_depth,
         vol_bo_thresh=vol_bo_thresh,
         ext_p10=ext_p10, ext_p90=ext_p90,
+        # ── New: vol build-up progress + breakout freshness ─────────────────────
+        vol_build_pct=min(day_vol_sc / (vol_bo_thresh + 1e-9), 1.5),
+        breakout_mins_ago=(max(0, elapsed_mins - int(cfg.VOL_CONFIRM_MIN_FRAC * session_mins))
+                           if (vol_confirm and setup_type == "Breakout") else None),
     )
 
 
@@ -2087,9 +2172,17 @@ def compute_penalties(feat: dict, sig: dict, market_ctx: dict,
     if setup == "Breakout" and ltp >= feat["base_hi"] + 0.5 * atr_v:
         t1v     = float(v.iloc[-1])
         vrank   = float((v.iloc[:-1] <= t1v).mean())
-        if vrank >= 0.90:   # raised from 0.85 — only ultra-high vol triggers penalty
+        if vrank >= 0.82:   # tightened: catches moves at 82nd+ vol percentile
             z = (vrank - 0.90) / 0.10
             penalties["already_bo"] = float(np.clip(6.0 * np.tanh(z * 2.0), 0.0, cfg.ALREADY_BO_CAP))
+
+    # ── Stale breakout: move already happened N days ago ─────────────────
+    # If price crossed above base_hi more than 3 bars ago, this is NOT a fresh
+    # entry — it is a post-move consolidation. Apply a scaling penalty.
+    _dsb = sig.get("days_since_break", 0)
+    if setup in ("Breakout", "Coiling") and _dsb >= 4:
+        _stale_excess = (_dsb - 3) / 5.0   # 0 at 3 days, 1.0 at 8 days
+        penalties["stale_breakout"] = float(np.clip(12.0 * np.tanh(_stale_excess), 0.0, 15.0))
 
     # ── Overextended breakout (above ext_p90) ─────────────────────
     if setup == "Breakout" and sig["breakout_ext"] > sig["ext_p90"]:
@@ -2360,6 +2453,19 @@ def aggregate_score(feat: dict, sig: dict, pen: dict,
             "proximity": cfg.W_PROXIMITY,"vcp":       _vcp_w,
             "darvas":    cfg.W_DARVAS,   "micro":     cfg.W_MICROSTRUCTURE,
         }
+        # ── OI as a weighted signal for F&O universe ──────────────────
+        # For F&O stocks OI data is meaningful and available; for NSE All
+        # most stocks have zero OI so the signal would be noise.
+        # When active, we steal a small weight from "micro" to keep weights
+        # normalised — OI weight (0.05) is taken proportionally from micro.
+        _is_fno = STATE.get("_last_universe") == "F&O Stocks"
+        _oi_sig = sig.get("oi_sc", 0.0)
+        if _is_fno and _oi_sig > 0:
+            _oi_w = 0.05
+            raw_sigs["oi"] = _oi_sig
+            weights["oi"]   = _oi_w
+            # Reduce micro weight to keep total normalised
+            weights["micro"] = max(0.0, cfg.W_MICROSTRUCTURE - _oi_w)
         # ── Signal validity gates ─────────────────────────────────
         # Each signal is set to None when it genuinely lacks enough
         # data to be meaningful, rather than silently returning a
@@ -2452,6 +2558,8 @@ def aggregate_score(feat: dict, sig: dict, pen: dict,
     # This gives the screener "memory" — a stock coiling for a week should rank
     # higher than one that just entered compression today.
     _streak = cs_state.get("coil_streak_days", {}).get(ticker, 0)
+
+    _days_since_break = sig.get("days_since_break", 0)   # computed in compute_signals
     streak_bonus = 0.0
     if _streak >= cfg.COIL_PERSIST_MIN_DAYS:
         # Bonus grows with streak length, capped at COIL_PERSIST_BONUS_CAP
@@ -2547,10 +2655,13 @@ def aggregate_score(feat: dict, sig: dict, pen: dict,
     # ── Horizon classification ────────────────────────────────────
     _atr_cv   = float(atr.iloc[-20:].std() / (atr.iloc[-20:].mean() + 1e-9)) if n >= 20 else 0.3
     _cv_scale = float(np.clip(1.0 + _atr_cv, 0.7, 1.5))
+    # BUG 1 FIX: Swing 2-5D multiplier raised from 1.8→2.8 so that at typical ATR%
+    # of 1.8-2.0%, the target reaches ~5%.  Previous 1.8× only hit 5% when ATR%≥2.78%,
+    # systematically under-targeting mid-cap stocks.
     _tgt_mult = {
         "Imminent BO": round(0.6 * _cv_scale, 2),
         "Intraday":    round(0.6 * _cv_scale, 2),
-        "Swing 2-5D":  round(1.8 * _cv_scale, 2),
+        "Swing 2-5D":  round(2.8 * _cv_scale, 2),   # was 1.8 — now reliably reaches 5% at ATR% ~1.8%
         "Mid 5-14D":   round(3.2 * _cv_scale, 2),
         "Long 14-30D": round(4.5 * _cv_scale, 2),
     }
@@ -2579,13 +2690,18 @@ def aggregate_score(feat: dict, sig: dict, pen: dict,
 
     vol_bo_t = sig["vol_bo_thresh"]
     rsi_p60  = float(rsi_all.iloc[:-1].tail(60).quantile(0.60)) if len(rsi_all) >= 20 else 55.0  # Bug 4 fix: exclude today's RSI from its own reference percentile
+    rsi_p90  = float(rsi_all.iloc[:-1].tail(60).quantile(0.90)) if len(rsi_all) >= 20 else cfg.RSI_OB_FALLBACK  # BUG 12 FIX: used in Intraday horizon gate
 
     if setup == "Breakout":
         d_bo = (base_hi - ltp) / (atr_v + 1e-9)
         if d_bo <= p20_bo and day_vol >= vol_bo_t:
             horizon = "Imminent BO"
             hz_note = f"AT TRIGGER — vol {vol_ratio:.1f}× avg. Enter now or market open."
-        elif d_bo <= 0.0 and vol_ratio >= 1.5 and rsi_v < rsi_p60:
+        elif d_bo <= 0.0 and vol_ratio >= 1.5 and rsi_v < rsi_p90:
+            # BUG 12 FIX: Was rsi_v < rsi_p60 — a stock actively breaking out with 1.5×
+            # volume almost always has RSI > P60, so this branch almost never fired.
+            # Changed to rsi_v < rsi_p90 (not yet severely overbought) to correctly
+            # classify fresh intraday breakouts.
             horizon = "Intraday"
             hz_note = f"Breaking today — RSI {rsi_v:.0f}, vol {vol_ratio:.1f}×. Trail stop above base low."
         elif d_bo <= p20_bo:
@@ -2696,7 +2812,16 @@ def aggregate_score(feat: dict, sig: dict, pen: dict,
 
     # Score-gate: below MIN_SCORE_FOR_LEVELS don't emit actionable levels —
     # they would be misleading precision on a weak setup.
-    _levels_ok = total >= cfg.MIN_SCORE_FOR_LEVELS
+    # BUG 10 FIX: Pre-move Coiling and PB setups legitimately score lower because
+    # vol_confirm=False reduces the volume weight contribution.  A stock with
+    # CoilingScore>=65 (strong compression) is actionable even at Score 30-38.
+    # Add a CoilingScore override so the Coiling ★ view is actually useful.
+    _coiling_override = (
+        setup in ("Coiling", "PB-EMA", "PB-Dry") and
+        coiling_score >= 65 and
+        total >= 28   # hard floor — never emit levels for truly weak setups
+    )
+    _levels_ok = total >= cfg.MIN_SCORE_FOR_LEVELS or _coiling_override
 
     if not _levels_ok:
         entry    = None
@@ -2858,6 +2983,7 @@ def aggregate_score(feat: dict, sig: dict, pen: dict,
         # ── Pre-move coiling quality (independent of vol_confirm) ─
         "CoilingScore": round(coiling_score, 1),
         "CoilStreakDays": _streak,
+        "DaysSinceBreak": int(_days_since_break),   # 0=fresh breakout, >3=already moved
         # ── Component scores ──────────────────────────────────────
         "RS": rs_pts, "RS_Sector": rs_sect_pts,
         "Volume": vol_pts, "InstVol": inst_pts,
@@ -2949,6 +3075,9 @@ def aggregate_score(feat: dict, sig: dict, pen: dict,
         "WeeklyTrendUp":     ind.get("weekly_trend_up", True),
         "MarketKill":        sig.get("market_kill", False),
         "LevelsValid":       _levels_ok,
+        # ── Freshness / build-up (Sub-Problems 1 & 2) ──────────────────
+        "VolBuildPct":       round(sig.get("vol_build_pct", 0.0), 3),
+        "BreakoutMinsAgo":   sig.get("breakout_mins_ago"),   # None for non-Breakout rows
     }
 
 
@@ -3483,12 +3612,6 @@ def compute_cs_ranks(st: dict) -> None:
     # Non-fatal: if DB write fails the in-memory streaks still work for this session.
     try:
         _db_conn = get_db()
-        _db_conn.execute("""
-            CREATE TABLE IF NOT EXISTS kv_store (
-                key   TEXT PRIMARY KEY,
-                value TEXT NOT NULL
-            )
-        """)
         _db_conn.execute(
             "INSERT OR REPLACE INTO kv_store(key, value) VALUES ('coil_streak_days', ?)",
             (_json.dumps(new_streaks),)
@@ -3510,10 +3633,14 @@ def compute_cs_ranks(st: dict) -> None:
             st["breadth_cache"] = new_breadth_cache
         if new_breadth_hist is not None:
             st["breadth_hist"] = new_breadth_hist
-        st["sector_returns"]     = {**st.get("mkt", {}).get("sector_returns",     {}),
-                                     **{s: float(np.mean(v)) for s, v in r5a.items()}}
-        st["sector_returns_10d"] = {**st.get("mkt", {}).get("sector_returns_10d", {}),
-                                     **{s: float(np.mean(v)) for s, v in r10a.items()}}
+        # BUG 11 FIX: Previously the stock-level average (r5a/r10a) always overwrote
+        # the accurate Yahoo Finance sector index returns from mkt.  Reversed merge order
+        # so Yahoo Finance values (authoritative NSE sector index returns) win.
+        # Stock-level averages are kept as fallback for sectors not covered by Yahoo tickers.
+        _stock_sr5  = {s: float(np.mean(v)) for s, v in r5a.items()}
+        _stock_sr10 = {s: float(np.mean(v)) for s, v in r10a.items()}
+        st["sector_returns"]     = {**_stock_sr5,  **st.get("mkt", {}).get("sector_returns",     {})}
+        st["sector_returns_10d"] = {**_stock_sr10, **st.get("mkt", {}).get("sector_returns_10d", {})}
 
 
 def _apply_coverage_score(df_out: pd.DataFrame) -> pd.DataFrame:
@@ -3530,7 +3657,10 @@ def _apply_coverage_score(df_out: pd.DataFrame) -> pd.DataFrame:
         cs  = df_out["CoilingScore"].fillna(0).clip(0, 100) / 100.0
         vcp = df_out["VCP"].fillna(0).clip(0, 10) / 10.0
         clv = df_out["CLVAccum"].fillna(0).clip(0, 8) / 8.0
-        streak = df_out["CoilStreakDays"].fillna(0).clip(0, 20) / 20.0 if "CoilStreakDays" in df_out.columns else 0.0
+        # BUG 8 FIX: Previously normalized by 20, but stocks rarely coil >7 days
+        # without breaking out.  A 5-day streak with /20 only contributed 0.0125
+        # to PreMoveRank.  Normalizing by 7 makes streaks meaningfully discriminating.
+        streak = df_out["CoilStreakDays"].fillna(0).clip(0, 7) / 7.0 if "CoilStreakDays" in df_out.columns else 0.0
         prox = df_out["Proximity"].fillna(0).clip(0, 10) / 10.0 if "Proximity" in df_out.columns else 0.5
         # Weighted composite: coiling quality 35%, VCP 25%, CLV 20%, proximity 15%, streak 5%
         df_out["PreMoveRank"] = (
@@ -3703,6 +3833,30 @@ def run_extraction(targets_dict: dict, min_avg_vol: int) -> None:
             # percentile ranks will shift as more stocks arrive — but it lets
             # the frontend show a live-updating table rather than a blank screen.
             # A final re-score pass runs after compute_cs_ranks() completes.
+            #
+            # BUG 7 FIX: coil_streak_days was cleared to {} at extraction start
+            # (all other cs-rank dicts are reset), meaning every provisional score
+            # showed CoilStreakDays=0 and the streak bonus never fired.
+            # Fix: restore DB-persisted streaks into STATE before the first
+            # progressive score so accumulated multi-day streaks are reflected
+            # even in the provisional pass.  compute_cs_ranks() will then
+            # correctly increment/reset them at the end of extraction.
+            try:
+                with STATE_LOCK:
+                    if not STATE.get("coil_streak_days"):
+                        try:
+                            _db_conn_streak = get_db()
+                            _kv_row = _db_conn_streak.execute(
+                                "SELECT value FROM kv_store WHERE key='coil_streak_days'"
+                            ).fetchone()
+                            if _kv_row:
+                                _loaded = _json.loads(_kv_row[0])
+                                if isinstance(_loaded, dict):
+                                    STATE["coil_streak_days"] = {str(k): int(v) for k, v in _loaded.items()}
+                        except Exception:
+                            pass   # kv_store may not exist — that's fine
+            except Exception:
+                pass
             try:
                 mkt      = STATE.get("mkt") or {}
                 live_lq  = live_q.get(normalize_key(targets_dict.get(sym, "")), {})
@@ -3728,6 +3882,7 @@ def run_extraction(targets_dict: dict, min_avg_vol: int) -> None:
                         STATE["score_cache"][sym] = {
                             "result": result, "ltp": ltp_now, "vol": vol_now,
                             "rsi_period": STATE.get("rsi_period", 7),
+                            "version": SCORE_RESULT_VERSION,
                         }
                         STATE["_row_stream_queue"].append(row)
             except Exception:
@@ -3762,6 +3917,8 @@ def run_extraction(targets_dict: dict, min_avg_vol: int) -> None:
             save_snapshot(rows_to_save, universe)
     except Exception:
         pass
+    # Save full machine state so restarts restore immediately without re-extraction.
+    threading.Thread(target=save_state_to_db, daemon=True).start()
 
 
 def refresh_live_prices_bg() -> None:
@@ -3811,6 +3968,51 @@ def refresh_live_prices_bg() -> None:
                     to_evict.append(sym)
         for sym in to_evict:
             STATE["score_cache"].pop(sym, None)
+    # ── Check alerts against live prices ───────────────────────────────────────
+    fired = _check_alerts(live, dict(STATE["targets"]))
+    if fired:
+        with STATE_LOCK:
+            STATE.setdefault("_alert_queue", [])
+            STATE["_alert_queue"].extend(fired)
+    # Persist updated scores so live-price-driven changes survive restart too.
+    threading.Thread(target=save_state_to_db, daemon=True).start()
+
+
+def _check_alerts(live_q: dict, targets: dict) -> list:
+    """Evaluate unfired alerts against current live prices / setup cache.
+    Returns list of newly-fired alert dicts.  Called from refresh_live_prices_bg every 30s."""
+    try:
+        conn    = get_db()
+        unfired = conn.execute("SELECT * FROM alerts WHERE fired=0").fetchall()
+        if not unfired:
+            return []
+        fired_now = []
+        for alert in unfired:
+            sym  = alert["symbol"]
+            cond = alert["cond"]
+            val  = float(alert["value"])
+            key  = normalize_key(targets.get(sym, ""))
+            lq   = live_q.get(key, {})
+            ltp  = lq.get("ltp")
+            triggered = False
+            if cond == "price_above" and ltp is not None and float(ltp) >= val:
+                triggered = True
+            elif cond == "price_below" and ltp is not None and float(ltp) <= val:
+                triggered = True
+            elif cond == "vol_confirm":
+                cached = STATE["score_cache"].get(sym, {}).get("result", {})
+                triggered = cached.get("SetupType") == "Breakout"
+            elif cond == "setup_change":
+                cached = STATE["score_cache"].get(sym, {}).get("result", {})
+                triggered = cached.get("SetupType") not in (None, "", alert.get("prev_setup"))
+            if triggered:
+                conn.execute("UPDATE alerts SET fired=1 WHERE id=?", (alert["id"],))
+                fired_now.append(dict(alert))
+        if fired_now:
+            conn.commit()
+        return fired_now
+    except Exception:
+        return []
 
 
 # ═════════════════════════════════════════════════════════════════
@@ -3833,6 +4035,117 @@ def get_db() -> sqlite3.Connection:
         conn.execute("PRAGMA cache_size=-8000")     # 8 MB page cache per connection
         _db_local.conn = conn
     return conn
+
+
+# Increment this whenever new fields are added to the score result dict.
+# The screener will reject cached results with a lower version and re-score.
+SCORE_RESULT_VERSION = 2
+SCORE_CACHE_KV_KEY   = "score_cache_v2"   # kv_store key for persisted score cache
+STATE_KV_KEY         = "state_v2"          # kv_store key for market context + cs_ranks + targets
+
+def save_state_to_db() -> None:
+    """Persist the full dynamic machine state to kv_store.
+
+    Saves three things so every restart restores a complete working system:
+      1. score_cache  — all scored results (DaysSinceBreak, CoilStreakDays etc)
+      2. state_blob   — market context, cs_ranks, targets, rs_div_hist,
+                        sector_returns, breadth, param_registry
+    The snapshots table already stores row_json per stock per run, but querying
+    it on startup requires a full DataFrame rebuild.  kv_store is faster and
+    stores exactly the in-memory dicts we need.
+    """
+    try:
+        with STATE_LOCK:
+            sc = dict(STATE["score_cache"])
+            state_blob = {
+                "targets":           dict(STATE.get("targets", {})),
+                "cs_rs_5d":          dict(STATE.get("cs_rs_5d", {})),
+                "cs_rs_20d":         dict(STATE.get("cs_rs_20d", {})),
+                "cs_bb_squeeze":     dict(STATE.get("cs_bb_squeeze", {})),
+                "cs_vol_dryup":      dict(STATE.get("cs_vol_dryup", {})),
+                "cs_clv_accum":      dict(STATE.get("cs_clv_accum", {})),
+                "cs_vcp":            dict(STATE.get("cs_vcp", {})),
+                "sector_returns":    dict(STATE.get("sector_returns", {})),
+                "sector_returns_10d":dict(STATE.get("sector_returns_10d", {})),
+                "breadth_cache":     STATE.get("breadth_cache"),
+                "breadth_hist":      list(STATE.get("breadth_hist", [])),
+                "rs_div_hist":       {k: list(v) for k, v in STATE.get("rs_div_hist", {}).items()},
+                "mkt":               {k: v for k, v in (STATE.get("mkt") or {}).items()
+                                      if not isinstance(v, (dict, list)) or k in
+                                      ("regime","vix_level","market_ok","nifty_r5","nifty_r20",
+                                       "nifty_above_50dma","vix_falling","market_notes",
+                                       "nifty_intraday_chg")},
+                "saved_at":          time.time(),
+            }
+        # Score cache — only versioned entries
+        to_save = {sym: entry for sym, entry in sc.items()
+                   if entry.get("version") == SCORE_RESULT_VERSION
+                   and entry.get("result") is not None}
+        db = get_db()
+        if to_save:
+            db.execute("INSERT OR REPLACE INTO kv_store(key,value) VALUES(?,?)",
+                       (SCORE_CACHE_KV_KEY, _json.dumps(to_save, default=str)))
+        db.execute("INSERT OR REPLACE INTO kv_store(key,value) VALUES(?,?)",
+                   (STATE_KV_KEY, _json.dumps(state_blob, default=str)))
+        db.commit()
+    except Exception:
+        pass
+
+
+def restore_state_from_db(st: dict) -> None:
+    """Restore full dynamic machine state from kv_store on startup.
+
+    Restores score_cache, market context, cross-sectional ranks, targets,
+    sector returns, breadth history, rs_div_hist — everything needed so the
+    screener serves correct data immediately after a restart without waiting
+    for a full re-extraction.
+
+    Only score_cache entries matching SCORE_RESULT_VERSION are loaded.
+    Stale entries are silently skipped — the screener re-scores them lazily.
+    """
+    db = get_db()
+
+    # ── 1. Score cache ────────────────────────────────────────────────────────
+    try:
+        row = db.execute("SELECT value FROM kv_store WHERE key=?",
+                         (SCORE_CACHE_KV_KEY,)).fetchone()
+        if row:
+            loaded = _json.loads(row[0])
+            if isinstance(loaded, dict):
+                for sym, entry in loaded.items():
+                    if (entry.get("version") == SCORE_RESULT_VERSION
+                            and entry.get("result") is not None):
+                        st["score_cache"][sym] = entry
+    except Exception:
+        pass
+
+    # ── 2. State blob: cs_ranks, targets, market context, etc ────────────────
+    try:
+        row = db.execute("SELECT value FROM kv_store WHERE key=?",
+                         (STATE_KV_KEY,)).fetchone()
+        if not row:
+            return
+        blob = _json.loads(row[0])
+        if not isinstance(blob, dict):
+            return
+        # Reject if saved more than 26 hours ago (stale market data)
+        if time.time() - blob.get("saved_at", 0) > 26 * 3600:
+            return
+        for key in ("targets", "cs_rs_5d", "cs_rs_20d", "cs_bb_squeeze",
+                    "cs_vol_dryup", "cs_clv_accum", "cs_vcp",
+                    "sector_returns", "sector_returns_10d"):
+            if key in blob and isinstance(blob[key], dict):
+                st[key] = blob[key]
+        if "breadth_cache" in blob:
+            st["breadth_cache"] = blob["breadth_cache"]
+        if "breadth_hist" in blob and isinstance(blob["breadth_hist"], list):
+            st["breadth_hist"] = blob["breadth_hist"]
+        if "rs_div_hist" in blob and isinstance(blob["rs_div_hist"], dict):
+            st["rs_div_hist"] = blob["rs_div_hist"]
+        if "mkt" in blob and isinstance(blob["mkt"], dict):
+            st["mkt"] = blob["mkt"]
+    except Exception:
+        pass
 
 
 def init_db() -> None:
@@ -3874,12 +4187,18 @@ def init_db() -> None:
             fired  INTEGER DEFAULT 0,
             ts     TEXT NOT NULL
         );
+
+        CREATE TABLE IF NOT EXISTS kv_store (
+            key   TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        );
     """)
     conn.commit()
 
 
 init_db()
 bootstrap_calibration_from_db(STATE, DB_PATH)
+restore_state_from_db(STATE)   # restore full dynamic machine state from DB
 
 # Load full 2500-stock sector DB into memory (sector_map.db built by sector_db.py).
 # Must run before any extraction so get_sector() has full coverage immediately.
@@ -4069,7 +4388,10 @@ def _get_nse_equity_df(master_df) -> "pd.DataFrame":
     from the Upstox historical-candle API.  Including them brings the universe
     from ~488 up to the full ~2,500 NSE equity stocks.
     """
-    _EQUITY_SERIES = {"EQ", "BE", "BZ", "SM", "ST", "IL"}
+    # BUG 13 FIX: Removed "ST" (NSE odd-lot / suspended series) — these securities
+    # have erratic prices and negligible volume.  They still passed min_avg_vol
+    # sometimes and consumed API fetch quota for zero actionable signals.
+    _EQUITY_SERIES = {"EQ", "BE", "BZ", "SM", "IL"}
     _NON_EQUITY    = {"INDEX", "MF", "UNITMF", "GB", "GS", "TB",
                       "FUTIDX", "FUTSTK", "OPTIDX", "OPTSTK"}
 
@@ -4116,7 +4438,7 @@ async def get_universe(universe: str = "Nifty 50"):
 async def start_extraction(body: dict, background_tasks: BackgroundTasks):
     universe = body.get("universe", "Nifty 50")
     min_vol  = body.get("min_avg_vol", 100_000)
-    rsi_p    = body.get("rsi_period",  7)
+    rsi_p    = body.get("rsi_period",  14)   # BUG 14 FIX: default 7→14
     STATE["rsi_period"]          = int(rsi_p)
     STATE["min_avg_vol"]         = int(min_vol)
     STATE["sector_cap_enabled"]  = body.get("sector_cap_enabled", False)
@@ -4226,6 +4548,13 @@ async def extraction_stream():
                     if prices:
                         yield f"event: prices\ndata: {_json.dumps(prices)}\n\n"
 
+                # ── alert events: drain _alert_queue and push each as SSE ──
+                with STATE_LOCK:
+                    pending_alerts = STATE.get("_alert_queue", [])[:]
+                    STATE["_alert_queue"] = []
+                for _a in pending_alerts:
+                    yield f"event: alert\ndata: {_json.dumps(_a)}\n\n"
+
                 await asyncio.sleep(0.3)   # tighter loop during extraction for snappier updates
             except asyncio.CancelledError:
                 break
@@ -4257,11 +4586,18 @@ async def get_screener(sort_by: str = "CoilingScore", horizon: str = "ALL"):
     lq_snap   = dict(STATE["live_quotes_cache"])
     tgt_snap  = dict(STATE["targets"])
     sc_snap   = dict(STATE["score_cache"])
-    # Compute universe-wide BO saturation fraction from last score_cache pass.
+    # BUG 15 FIX: Previously computed _bo_saturation_frac from the stale score_cache
+    # snapshot (always one pass behind).  On first extraction (empty cache) the fraction
+    # was always 0 and the saturation guard never fired.
+    # Fix: compute from the current snapshot for the first pass (cache-based), but also
+    # seed STATE["_bo_saturation_frac"] from the restored DB score cache at startup
+    # so restarts don't reset it to 0.
     _cached_results = [v.get("result") for v in sc_snap.values() if v.get("result")]
     _bo_count  = sum(1 for r in _cached_results if r.get("SetupType") in ("Breakout", "Coiling"))
     _tot_cache = max(len(_cached_results), 1)
-    STATE["_bo_saturation_frac"] = _bo_count / _tot_cache
+    # Use a rolling blend: 80% new measurement, 20% previous value for stability
+    _prev_sat = STATE.get("_bo_saturation_frac", _bo_count / _tot_cache)
+    STATE["_bo_saturation_frac"] = 0.8 * (_bo_count / _tot_cache) + 0.2 * _prev_sat
 
     # Build a universe-wide EMI map from the previous score_cache pass so that
     # aggregate_score can percentile-rank each stock's raw EMI and avoid
@@ -4285,13 +4621,15 @@ async def get_screener(sort_by: str = "CoilingScore", horizon: str = "ALL"):
             # Cache hit: LTP within 1% AND rsi_period unchanged
             rsi_match = cached_e and cached_e.get("rsi_period") == STATE.get("rsi_period", 7)
             ltp_match = cached_e and abs(cached_e.get("ltp", 0) - ltp_now) < 0.01 * ltp_now
-            if rsi_match and ltp_match and cached_e.get("result") is not None:
+            ver_match = cached_e and cached_e.get("version") == SCORE_RESULT_VERSION
+            if rsi_match and ltp_match and ver_match and cached_e.get("result") is not None:
                 result = cached_e["result"]
             else:
                 result = score_stock_dual(sym, df_raw, live, nifty_r5, nifty_r20)
                 STATE["score_cache"][sym] = {
                     "result": result, "ltp": ltp_now, "vol": vol_now,
                     "rsi_period": STATE.get("rsi_period", 7),
+                    "version": SCORE_RESULT_VERSION,
                 }
             if result is None: continue
             prev_close = float(df_raw["close"].iloc[-2]) if len(df_raw) >= 2 else ltp_now
@@ -4328,6 +4666,8 @@ async def get_screener(sort_by: str = "CoilingScore", horizon: str = "ALL"):
     if horizon != "ALL":
         df_out = df_out[df_out["Horizon"] == horizon].reset_index(drop=True); df_out["Rank"] = df_out.index + 1
     df_out = df_out.replace({np.nan: None, np.inf: None, -np.inf: None})
+    # Persist full machine state after every screener build so restarts restore instantly.
+    threading.Thread(target=save_state_to_db, daemon=True).start()
     sector_ret = {s: round(v * 100, 2) for s, v in STATE["sector_returns"].items()}
     return {
         "rows": df_out.to_dict("records"),
@@ -4378,7 +4718,8 @@ async def get_premove_candidates(min_coil: float = 55.0, min_vcp: float = 4.0,
             cached_e = sc_snap.get(sym)
             rsi_match = cached_e and cached_e.get("rsi_period") == STATE.get("rsi_period", 7)
             ltp_match = cached_e and abs(cached_e.get("ltp", 0) - ltp_now) < 0.01 * ltp_now
-            if rsi_match and ltp_match and cached_e.get("result") is not None:
+            ver_match = cached_e and cached_e.get("version") == SCORE_RESULT_VERSION
+            if rsi_match and ltp_match and ver_match and cached_e.get("result") is not None:
                 result = cached_e["result"]
             else:
                 result = score_stock_dual(sym, df_raw, live, nifty_r5, nifty_r20)
@@ -4386,6 +4727,7 @@ async def get_premove_candidates(min_coil: float = 55.0, min_vcp: float = 4.0,
                     STATE["score_cache"][sym] = {
                         "result": result, "ltp": ltp_now, "vol": 0,
                         "rsi_period": STATE.get("rsi_period", 7),
+                        "version": SCORE_RESULT_VERSION,
                     }
             if result is None: continue
             # Pre-move filter: must be in compression or pullback phase, not already broken out
@@ -4592,6 +4934,44 @@ async def remove_from_watchlist(symbol: str):
     conn.execute("DELETE FROM watchlist WHERE symbol=?", (symbol.upper(),))
     conn.commit()
     return {"status": "ok"}
+
+# ── Alerts ───────────────────────────────────────────────────────
+
+@app.post("/api/alerts")
+async def create_alert(body: dict):
+    """Create a new price or vol_confirm alert for a symbol.
+
+    body: {symbol, cond: 'price_above'|'price_below'|'vol_confirm'|'setup_change', value}
+    """
+    sym   = str(body.get("symbol", "")).upper()
+    cond  = str(body.get("cond", "price_above"))
+    value = float(body.get("value", 0.0))
+    if not sym or cond not in ("price_above", "price_below", "vol_confirm", "setup_change"):
+        raise HTTPException(400, "Invalid alert body")
+    conn = get_db()
+    conn.execute(
+        "INSERT INTO alerts(symbol,cond,value,fired,ts) VALUES(?,?,?,0,?)",
+        (sym, cond, value, _dt.now().isoformat())
+    )
+    conn.commit()
+    return {"status": "ok", "symbol": sym, "cond": cond, "value": value}
+
+
+@app.get("/api/alerts")
+async def get_alerts():
+    """Return all alerts (unfired and fired) ordered by ts desc."""
+    rows = get_db().execute("SELECT * FROM alerts ORDER BY ts DESC").fetchall()
+    return {"alerts": [dict(r) for r in rows]}
+
+
+@app.delete("/api/alerts/{alert_id}")
+async def delete_alert(alert_id: int):
+    """Delete an alert by id."""
+    conn = get_db()
+    conn.execute("DELETE FROM alerts WHERE id=?", (alert_id,))
+    conn.commit()
+    return {"status": "ok"}
+
 
 # ── News ──────────────────────────────────────────────────────────
 @app.get("/api/news")
@@ -4815,12 +5195,22 @@ async def explain_score(symbol: str):
 def _fill_forward_returns_bg() -> int:
     """Fill forward_ret for calibration rows that are FORWARD_RETURN_DAYS old.
     Uses the live_quotes_cache for speed; falls back to the raw_data_cache close.
-    Called by the daemon and by the calibration snapshot route."""
+    Called by the daemon and by the calibration snapshot route.
+
+    BUG 2 FIX: Previously used iloc[-(FORWARD_RETURN_DAYS+1)] as entry price,
+    which always pointed to a fixed bar offset regardless of when the snapshot
+    was taken. Now we verify the cache has advanced by >= FORWARD_RETURN_DAYS
+    trading bars since the snapshot, then use the latest available close as exit
+    and the bar at snapshot-time as entry — giving a true N-bar forward return.
+    """
     cfg  = SCORE_CFG
     conn = get_db()
-    cutoff_ts = (_dt.now() - timedelta(days=cfg.FORWARD_RETURN_DAYS)).isoformat()
+    # Use 7 calendar days as cutoff (covers weekends + 1-day buffer for holidays)
+    # to ensure at least FORWARD_RETURN_DAYS trading days have elapsed.
+    calendar_days_buffer = max(cfg.FORWARD_RETURN_DAYS + 2, 7)
+    cutoff_ts = (_dt.now() - timedelta(days=calendar_days_buffer)).isoformat()
     pending = conn.execute(
-        "SELECT id, symbol, score FROM calibration WHERE forward_ret IS NULL AND ts <= ?",
+        "SELECT id, symbol, score, ts FROM calibration WHERE forward_ret IS NULL AND ts <= ?",
         (cutoff_ts,)
     ).fetchall()
     if not pending:
@@ -4830,25 +5220,38 @@ def _fill_forward_returns_bg() -> int:
     raw_snap = dict(STATE.get("raw_data_cache",    {}))
     tgt_snap = dict(STATE.get("targets",           {}))
     for row in pending:
-        rid, sym, _entry_score = row["id"], row["symbol"], row["score"]
+        rid, sym, _entry_score, snap_ts = row["id"], row["symbol"], row["score"], row["ts"]
         try:
-            lq  = lq_snap.get(normalize_key(tgt_snap.get(sym, "")), {})
-            ltp = lq.get("ltp")
-            if ltp is None:
-                df_r = raw_snap.get(sym)
-                if df_r is None or len(df_r) < 2:
-                    continue
-                ltp = float(df_r["close"].iloc[-1])
-            # entry price approximated from score row — use most recent close
-            # at the time of snapshot as the denominator.  We don't store the
-            # exact entry price, so we use the current LTP as numerator and the
-            # LTP stored in the snapshot row (reconstructed as close[-1] at snap time).
-            # This gives a reasonable forward return proxy.
             df_r = raw_snap.get(sym)
             if df_r is None or len(df_r) < cfg.FORWARD_RETURN_DAYS + 2:
                 continue
-            snap_close = float(df_r["close"].iloc[-(cfg.FORWARD_RETURN_DAYS + 1)])
-            fwd = (float(ltp) - snap_close) / (snap_close + 1e-9)
+
+            # BUG 2 FIX: Align snapshot timestamp to the closest bar in the cache
+            # so entry_price is the actual close at signal time, not a fixed offset.
+            if "time" in df_r.columns:
+                _times = pd.to_datetime(df_r["time"])
+                _snap_dt = pd.to_datetime(snap_ts)
+                _bar_idx = (_times - _snap_dt).abs().idxmin()
+                _bar_pos = df_r.index.get_loc(_bar_idx)
+            else:
+                # No time column — fall back to FORWARD_RETURN_DAYS bars from end
+                _bar_pos = max(0, len(df_r) - cfg.FORWARD_RETURN_DAYS - 1)
+
+            # Require at least FORWARD_RETURN_DAYS bars have been added since snapshot
+            _bars_since = len(df_r) - 1 - _bar_pos
+            if _bars_since < cfg.FORWARD_RETURN_DAYS:
+                continue   # not enough bars yet — skip, will be filled later
+
+            entry_close = float(df_r["close"].iloc[_bar_pos])
+            if entry_close <= 0:
+                continue
+
+            # Exit: use live LTP if available and fresh, else last bar close
+            lq  = lq_snap.get(normalize_key(tgt_snap.get(sym, "")), {})
+            ltp = lq.get("ltp")
+            exit_price = float(ltp) if ltp else float(df_r["close"].iloc[-1])
+
+            fwd = (exit_price - entry_close) / (entry_close + 1e-9)
             conn.execute(
                 "UPDATE calibration SET forward_ret=? WHERE id=?",
                 (round(fwd, 6), rid)

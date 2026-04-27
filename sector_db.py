@@ -69,6 +69,48 @@ NSE_INDEX_TO_SECTOR: Dict[str, Optional[str]] = {
     "NIFTY INDIA MANUFACTURING":    "Infra",
 }
 
+# ── Index priority: higher number = more specific = WINS on conflict ──────────
+# Problem: NIFTY IT (→IT) and NIFTY INDIA DIGITAL (→Telecom) both contain TCS,
+# INFY, WIPRO, HCLTECH, TECHM. When iterated in dict order, NIFTY INDIA DIGITAL
+# is processed AFTER NIFTY IT, so these stocks end up tagged "Telecom".
+# Similarly NIFTY FINANCIAL SERVICES (→Insurance) overwrites NIFTY BANK (→Bank)
+# for HDFCBANK, ICICIBANK, KOTAKBANK, AXISBANK, SBIN.
+# Fix: primary sector indices get priority=10; broad/overlap indices get priority=1.
+# upsert_nse_index() only overwrites when new_priority >= existing_priority.
+NSE_INDEX_PRIORITY: Dict[str, int] = {
+    # Priority 10 — dedicated, specific sector indices (always win)
+    "NIFTY IT":                    10,
+    "NIFTY BANK":                  10,
+    "NIFTY AUTO":                  10,
+    "NIFTY PHARMA":                10,
+    "NIFTY METAL":                 10,
+    "NIFTY ENERGY":                10,
+    "NIFTY INFRASTRUCTURE":        10,
+    "NIFTY FMCG":                  10,
+    "NIFTY REALTY":                10,
+    "NIFTY PSU BANK":              10,
+    "NIFTY CHEMICALS":             10,
+    "NIFTY CONSUMER DURABLES":     10,
+    "NIFTY OIL AND GAS":           10,
+    "NIFTY MEDIA":                 10,
+    # Priority 5 — sub-indices that mostly don't overlap with priority-10 indices
+    "NIFTY HEALTHCARE INDEX":       5,
+    "NIFTY INDIA DEFENCE":          5,
+    "NIFTY INDIA MANUFACTURING":    5,
+    "NIFTY MIDSMALL HEALTHCARE":    5,
+    "NIFTY MIDSMALL IT & TELECOM":  5,
+    # Priority 1 — broad/thematic indices that overlap heavily with sector indices
+    # These classify stocks NOT already covered by a priority-10 index,
+    # but must NOT overwrite TCS→IT, HDFCBANK→Bank, etc.
+    "NIFTY FINANCIAL SERVICES":     1,   # overlaps with NIFTY BANK
+    "NIFTY INDIA DIGITAL":          1,   # overlaps with NIFTY IT
+    "NIFTY INDIA CONSUMPTION":      1,   # overlaps with FMCG/Retail/Auto
+    # Priority 0 — classification-only indices (sector assigned via CSV industry map)
+    "NIFTY MIDCAP 150":             0,
+    "NIFTY SMALLCAP 250":           0,
+    "NIFTY MICROCAP 250":           0,
+}
+
 # ── NSE master-CSV industry string → internal sector label ───────
 # NSE EQUITY_L.csv " INDUSTRY" column values (stripped + uppercased).
 # Anything not in this map is stored as "Other".
@@ -461,7 +503,169 @@ EXTENDED_SECTOR_MAP: Dict[str, str] = {
     "IRCTC":"Retail","THOMASCOOK":"Retail","COX":"Retail",
     "MAKEMYTRIP":"Retail","EASEMYTRIP":"Retail","YATRA":"Retail",
     "SPICEJET":"Logistics","INDIGO":"Logistics","AIRINDIA":"Logistics",
-    # ── AUTO-EXPANDED COVERAGE (additional mid/small/micro-cap NSE universe) ──
+    # ── ADDITIONAL COVERAGE: F&O universe, popular mid/small caps ──────────────
+
+    # IT / Digital (additional)
+    "INDIAMART":"IT","MAPMYINDIA":"IT","LATENTVIEW":"IT","INFOEDGE":"IT",
+    "JUSTDIAL":"IT","CARTRADE":"IT","POLICYBZR":"IT","PAYTM":"IT",
+    "NYKAA":"Retail","MEESHO":"Retail","SWIGGY":"Retail","ZOMATO":"Retail",
+    "DELHIVERY":"Logistics","IXIGO":"Retail","FIRSTCRY":"Retail",
+    "UNICOMMERCE":"IT","BLACKBOX":"IT","ZAGGLE":"IT","UPDATER":"IT",
+    "CENTURYSYN":"IT","SIEVERT":"IT","IKS":"IT","PWL":"IT",
+    "TBOTEK":"Retail","URBANCO":"Retail","PINELABS":"Insurance",
+    "IIFL":"Insurance","IIFLSEC":"Insurance","ANGELONE":"Insurance",
+    "MOTILALOFS":"Insurance","5PAISA":"Insurance","ZERODHA":"Insurance",
+
+    # Banks & NBFCs (additional private/small finance)
+    "SHRIRAMFIN":"Insurance","MANAPPURAM":"Insurance","IIFL":"Insurance",
+    "CREDITACC":"Insurance","SPANDANA":"Insurance","AROHAN":"Insurance",
+    "FUSION":"Insurance","UTKARSH":"Insurance","JANA":"Insurance",
+    "SBFC":"Insurance","UGROCAP":"Insurance","CAPSFIN":"Insurance",
+    "HOMEFIRST":"Insurance","AADHAR":"Insurance","APTUS":"Insurance",
+    "AAVAS":"Insurance","CANFINHOME":"Insurance","REPCO":"Insurance",
+    "GRUH":"Insurance","PNBHOUSING":"Insurance","LICHSGFIN":"Insurance",
+
+    # Insurance (dedicated)
+    "STARHEALTH":"Insurance","GODIGIT":"Insurance","NIVA":"Insurance",
+    "CIGNATHPE":"Insurance","MAXFIN":"Insurance","TATAAIA":"Insurance",
+
+    # Pharma / Healthcare (additional)
+    "DRREDDYS":"Pharma","MANKIND":"Pharma","AZADPHARMA":"Pharma",
+    "JUPITERHSP":"Pharma","HEALTHIUM":"Pharma","JYOTIMED":"Pharma",
+    "GLANDPHARMA":"Pharma","INTAS":"Pharma","TORNTPHARM":"Pharma",
+    "CADILAHC":"Pharma","WOCKPHARMA":"Pharma","USHAMART":"Pharma",
+    "SUVENPHAR":"Pharma","PIRAMALPHA":"Pharma","MEDPLUS":"Pharma",
+    "SAPPHIREHC":"Pharma","YATHARTH":"Pharma","SAGILITY":"Pharma",
+
+    # Auto (additional F&O stocks)
+    "SAMVARDHANA":"Auto","SANSERA":"Auto","BELRISE":"Auto","MINDA":"Auto",
+    "METALMAN":"Auto","UNIFLEX":"Auto","JBMA":"Auto","SUNDRMBRAK":"Auto",
+    "NRBBEARING":"Auto","STEELCAST":"Auto","SHRIRAMAUT":"Auto",
+
+    # Energy / Power (additional)
+    "JPPOWER":"Energy","LNTECC":"Energy","NPCIL":"Energy","NHPC":"Energy",
+    "SJVN":"Energy","IREDA":"Energy","ADANIENSOL":"Energy","GREENKO":"Energy",
+    "TORNTPOWER":"Energy","CESC":"Energy","JSPL":"Metal","JSWENERGY":"Energy",
+    "TPWR":"Energy","RPOWER":"Energy","ORIENTENERGY":"Energy","SEMBCORP":"Energy",
+    "WAAREEENER":"Energy","WEBSOL":"Energy","PREMIER":"Energy","INOXWIND":"Energy",
+    "PREMIER":"Energy","WINDWORLD":"Energy","SUZLON":"Energy","BOROSCI":"Energy",
+
+    # Infra / Capital Goods (additional)
+    "LTTECHNO":"IT","LTALENTA":"IT","LTMINDTREE":"IT",
+    "CGPOWER":"Infra","POWERIND":"Infra","INOXAIR":"Infra","ISGEC":"Infra",
+    "TDPOWERSYS":"Infra","POWERTECH":"Infra","TRANSFORMERS":"Infra",
+    "VOLTASLTD":"Infra","JOHNSONCON":"Infra","HITACHIEN":"Infra",
+    "EMERSON":"Infra","SCHNEIDER":"Infra","LEGRAND":"Infra",
+    "KALYANIFOR":"Infra","KAYNES":"Infra","SYRMA":"IT","CYIENTDLM":"IT",
+    "AVALON":"IT","GENESYS":"IT","ASTER":"Pharma",
+    "ADANIGREEN":"Energy","ADANITRANS":"Infra","ADANIPORTS":"Infra",
+    "ADANIENT":"Infra","NDTV":"Media","INDSGN":"Infra",
+    "JSWINFRA":"Infra","GMRAIRPORT":"Infra","DELHIAIRP":"Infra",
+    "NHAI":"Infra","MEP":"Infra","CUBE":"Infra","ASHOKA":"Infra",
+    "SADBHAV":"Infra","PNCINFRA":"Infra","HGINFRA":"Infra",
+    "KPIL":"Infra","NCC":"Infra","AHLUCONT":"Infra","CAPACITE":"Infra",
+    "KNRCON":"Infra","PSP":"Infra","GAYAPROJ":"Infra",
+    "JITFINFRA":"Infra","WELCORP":"Infra","DILIPBUILD":"Infra",
+
+    # Chemicals (additional)
+    "TATACHEM":"Chemicals","ATUL":"Chemicals","CLEAN":"Chemicals",
+    "AETHER":"Chemicals","ROSSARI":"Chemicals","NOCIL":"Chemicals",
+    "LAXMICHEM":"Chemicals","SUDARSCHEM":"Chemicals","GUJALKALI":"Chemicals",
+    "CHEMPLASTS":"Chemicals","DCMSHRIRAM":"Chemicals","BASF":"Chemicals",
+    "GHCL":"Chemicals","ALLCHEM":"Chemicals","STERLITETECH":"IT",
+    "TRONOX":"Chemicals","TRANSPEK":"Chemicals","ARCHEAN":"Chemicals",
+    "EPIGRAL":"Chemicals","NEOGEN":"Chemicals","COSMOFILMS":"Chemicals",
+    "IGPL":"Chemicals","INGREVIA":"Chemicals","JUBILANTIND":"Chemicals",
+    "KIRIIND":"Chemicals","BODAL":"Chemicals","DYNEMIC":"Chemicals",
+    "PCBL":"Chemicals","GOACARBON":"Chemicals","HEG":"Metal",
+    "GRAPHITE":"Metal","SHYAMMETALIC":"Metal",
+
+    # FMCG (additional)
+    "JYOTHYLAB":"FMCG","BAJAJCON":"FMCG","KANSAINER":"FMCG","BERGER":"FMCG",
+    "BERGEPAINT":"FMCG","AKZOINDIA":"FMCG","PGHH":"FMCG","GILLETTE":"FMCG",
+    "BIKAJI":"FMCG","DEVYANI":"FMCG","SAPPHIRE":"FMCG","WESTLIFE":"Retail",
+    "GODFRYPHLP":"FMCG","VSTIND":"FMCG","PATANJALI":"FMCG","VBL":"FMCG",
+    "HERITAGE":"FMCG","PARAG":"FMCG","DODLA":"FMCG","HATSUN":"FMCG",
+    "CREAMLINE":"FMCG","CCL":"FMCG","SRHHYPOLTD":"FMCG","AVALON":"FMCG",
+    "SURYAFOOD":"FMCG","TASTY":"FMCG","SBC":"FMCG","AGRO":"FMCG",
+
+    # Realty (additional)
+    "MAHLIFE":"Realty","KOLTEPATIL":"Realty","SUNTECK":"Realty",
+    "PURAVANKARA":"Realty","ANANTRAJ":"Realty","RUSTOMJEE":"Realty",
+    "OMAXE":"Realty","ELDECO":"Realty","IBREALEST":"Realty",
+    "ASHIANA":"Realty","ARVINDSMRT":"Realty","SIGNATURE":"Realty",
+    "EMAARIND":"Realty","NESCO":"Realty","AUROREAL":"Realty",
+    "EQUINOX":"Realty","SAFFRON":"Realty","HEMIPROP":"Realty",
+    "PURAVANKAR":"Realty","TATAHOUSING":"Realty","MAHINDLIFE":"Realty",
+
+    # Consumer Durables (additional)
+    "KAYNES":"IT","SYRMA":"IT","AMBER":"ConsumerDur","AMBERENTER":"ConsumerDur",
+    "DIXON":"ConsumerDur","VOLTAS":"ConsumerDur","BLUESTAR":"ConsumerDur",
+    "VGUARD":"ConsumerDur","ORIENTELEC":"ConsumerDur","BAJAJELE":"ConsumerDur",
+    "WHIRLPOOL":"ConsumerDur","HITACHIHB":"ConsumerDur","CERA":"ConsumerDur",
+    "HINDWARE":"ConsumerDur","TITAN":"ConsumerDur","KALYAN":"ConsumerDur",
+    "KALYANKJIL":"ConsumerDur","SENCO":"ConsumerDur","RAJESHEXPO":"ConsumerDur",
+    "THANGAMAYL":"ConsumerDur","GOLDIAM":"ConsumerDur","PCJEWELLER":"ConsumerDur",
+    "PVRINOX":"Media","INOXLEISUR":"Media","SAREGAMA":"Media","NAZARA":"Media",
+
+    # Retail / QSR
+    "TRENT":"Retail","DMART":"Retail","SHOPERSTOP":"Retail","CENTRBRND":"Retail",
+    "VMART":"Retail","VEDANT":"Retail","MANYAVAR":"Retail","BATA":"Retail",
+    "RELAXO":"Retail","METRO":"Retail","LIBERTY":"Retail","KHADIM":"Retail",
+    "RAYMOND":"Retail","NYKAA":"Retail","GLOBUSSPR":"Retail","LIMEROAD":"Retail",
+    "WESTLIFE":"Retail","BURGER":"Retail","SAPPHIREF":"Retail","JUBLFOOD":"Retail",
+    "RESTAURAN":"Retail","BARBEQUE":"Retail","SPECIALITY":"Retail",
+    "IRCTC":"Retail","THOMASCOOK":"Retail","EASEMYTRIP":"Retail","IXIGO":"Retail",
+
+    # Logistics (additional)
+    "MAHLOG":"Logistics","TVSSCS":"Logistics","TCI":"Logistics","VRL":"Logistics",
+    "ALLCARGO":"Logistics","SNOWMAN":"Logistics","SIDBIPRO":"Logistics",
+    "GATEWAY":"Logistics","DELHIVERY":"Logistics","SPOTON":"Logistics",
+    "XPRESSBEES":"Logistics","EKART":"Logistics","SHIPROCKET":"Logistics",
+    "SPICEJET":"Logistics","INDIGO":"Logistics","AIRINDIA":"Logistics",
+    "GMRAIRPORT":"Infra","NAGPUR":"Infra","COCHINAIRP":"Infra",
+
+    # Media / Entertainment (additional)
+    "SUNTV":"Media","ZEEL":"Media","PVRINOX":"Media","DISHTV":"Media",
+    "HINDMEDIA":"Media","DBCORP":"Media","JAGRANPRAK":"Media","SAREGAMA":"Media",
+    "TIPS":"Media","EROS":"Media","BALAJITELE":"Media","SHEMAROO":"Media",
+    "TVTODAY":"Media","NDTV":"Media","TV18BRDCST":"Media","NETWORK18":"Media",
+    "TIMESNETW":"Media","NAZARA":"Media","ONMOBILE":"IT","PLAYROOS":"Media",
+
+    # Textiles (additional)
+    "PAGEIND":"Textile","TRIDENT":"Textile","WELSPUNIND":"Textile",
+    "VARDHMAN":"Textile","GRASIM":"Textile","AARVEE":"Textile","KITEX":"Textile",
+    "DONEAR":"Textile","RSWM":"Textile","SIYARAM":"Textile","SUTLEJ":"Textile",
+    "ALOKTEXT":"Textile","HIMATSEIDE":"Textile","NAHAR":"Textile",
+    "MAFATLAIND":"Textile","BOMBAYRAYON":"Textile","SPENTEX":"Textile",
+    "NATHPUR":"Textile","NITIN":"Textile","ARVIND":"Textile",
+
+    # Agri / Agrochemicals (additional)
+    "COROMANDEL":"Chemicals","CHAMBAL":"Chemicals","NFL":"Chemicals",
+    "PIIND":"Chemicals","RALLIS":"Chemicals","KAVERI":"Agri",
+    "DHANUKA":"Chemicals","INSECTICID":"Chemicals","BAYER":"Chemicals",
+    "AVANTIFEED":"Agri","WATERBASE":"Agri","GODREJAGRO":"Agri",
+    "BESTAG":"Agri","MAHKSEEDS":"Agri","SUPREMIND":"Agri","APEX":"Agri",
+
+    # Hospitality / Travel
+    "INDHOTEL":"Retail","EIHOTEL":"Retail","MAHINDHOLIDAY":"Retail",
+    "WONDERLA":"Retail","LEMONTREE":"Retail","CHALET":"Retail",
+    "KAMAT":"Retail","TAJGVK":"Retail","THOMASCOOK":"Retail",
+    "MAKEMYTRIP":"Retail","EASEMYTRIP":"Retail","YATRA":"Retail",
+
+    # Defence (additional)
+    "IDEAFORGE":"Infra","NEWSPACETECH":"Infra","ELCON":"Infra",
+    "PARAS":"Infra","ASTRA":"Infra","ZEN":"IT","ECIL":"IT",
+    "SMPP":"Infra","SOLARINDS":"Infra","MTAR":"Infra","DATAPATTNS":"Infra",
+
+    # Telecom (true telecom, not IT)
+    "BHARTIARTL":"Telecom","IDEA":"Telecom","TATACOMM":"Telecom",
+    "INDUSTOWER":"Telecom","HFCL":"Telecom","RAILTEL":"Telecom",
+    "ITI":"Telecom","TEJAS":"Telecom","STERLITETECH":"IT","TEJASNET":"Telecom",
+    "VINDHYATEL":"Telecom","NELCO":"Telecom","TTML":"Telecom",
+    "DNET":"Telecom","GTPL":"Telecom","HATHWAY":"Telecom",
+
+    # AUTO-EXPANDED COVERAGE (additional mid/small/micro-cap NSE universe) ──
 
     # Agri
     "AGRICHEM":"Agri","AGRIMONY":"Agri","AGRITECH":"Agri","AGROCON":"Agri","AGROMALL":"Agri","AGROVET":"Agri",
@@ -672,28 +876,87 @@ def get_db(path: str = DB_PATH) -> sqlite3.Connection:
     return conn
 
 
-def upsert(conn: sqlite3.Connection, symbol: str, sector: str, source: str):
+def upsert(conn: sqlite3.Connection, symbol: str, sector: str, source: str,
+           index_priority: int = 0):
     """
     Insert or update a sector mapping.
-    Manual entries (source='manual') are never overwritten by auto-refresh —
-    enforced by SELECT-then-INSERT logic that is compatible with all SQLite versions.
+
+    Priority rules (highest to lowest):
+      manual     — never overwritten by anything
+      nse_index  — priority=10..1 depending on which index (see NSE_INDEX_PRIORITY)
+      nse_master / nse_master_api — overwrites static/extended, never nse_index
+      extended   — overwrites static only
+      static     — lowest; only applies when nothing else exists
+
+    The index_priority parameter is only used when source='nse_index'.
+    It is stored in the source field as 'nse_index:10', 'nse_index:1', etc.,
+    so priority comparisons survive server restarts.
     """
     sym = symbol.upper().strip()
     now = datetime.now().isoformat()
+    # Encode priority into the source string for persistence
+    stored_source = f"{source}:{index_priority}" if source == "nse_index" else source
+
     existing = conn.execute(
         "SELECT source FROM sector_map WHERE symbol=?", (sym,)
     ).fetchone()
+
     if existing is None:
         conn.execute(
             "INSERT INTO sector_map(symbol, sector, source, updated_at) VALUES(?,?,?,?)",
-            (sym, sector, source, now)
+            (sym, sector, stored_source, now)
         )
-    elif existing["source"] != "manual":
+        return
+
+    ex_src = existing["source"]
+
+    # Manual entries are never overwritten
+    if ex_src == "manual":
+        return
+
+    # Compare priorities
+    if source == "nse_index":
+        # Extract existing priority if it was stored as nse_index:N
+        ex_priority = 0
+        if ex_src.startswith("nse_index:"):
+            try:
+                ex_priority = int(ex_src.split(":")[1])
+            except (IndexError, ValueError):
+                ex_priority = 0
+        elif ex_src == "nse_index":
+            ex_priority = 0  # legacy rows without priority
+        elif ex_src in ("nse_master", "nse_master_api"):
+            # nse_master has been applied; nse_index always overrides master for specificity
+            ex_priority = -1
+        else:
+            ex_priority = -1  # static / extended — nse_index always wins
+
+        if index_priority >= ex_priority:
+            conn.execute(
+                "UPDATE sector_map SET sector=?, source=?, updated_at=? WHERE symbol=?",
+                (sector, stored_source, now, sym)
+            )
+        # else: existing nse_index entry has higher priority — keep it
+    elif source in ("nse_master", "nse_master_api"):
+        # Master CSV overwrites static/extended but NOT nse_index entries
+        if ex_src.startswith("nse_index") or ex_src == "nse_index":
+            return  # nse_index wins over master
         conn.execute(
             "UPDATE sector_map SET sector=?, source=?, updated_at=? WHERE symbol=?",
             (sector, source, now, sym)
         )
-    # If source == 'manual': silently skip — manual entry is protected
+    else:
+        # extended / static: only overwrite lower-priority sources
+        SOURCE_RANK = {"static": 0, "extended": 1}
+        new_rank = SOURCE_RANK.get(source, 0)
+        ex_rank  = SOURCE_RANK.get(ex_src.split(":")[0], 99)  # unknown = high rank → don't overwrite
+        if ex_src.startswith("nse_index") or ex_src in ("nse_master", "nse_master_api"):
+            return  # never overwrite higher-priority sources
+        if new_rank > ex_rank:
+            conn.execute(
+                "UPDATE sector_map SET sector=?, source=?, updated_at=? WHERE symbol=?",
+                (sector, source, now, sym)
+            )
 
 
 def lookup(symbol: str, path: str = DB_PATH) -> Optional[str]:
@@ -769,15 +1032,16 @@ def load_from_nse_indices(conn: sqlite3.Connection) -> int:
             # Classification-only index: fetch symbols so the NSE master CSV
             # pass can map their industries, but don't assign a blanket sector.
             continue
+        priority = NSE_INDEX_PRIORITY.get(index_name, 1)
         syms = fetch_nse_index(session, index_name)
         if not syms:
             print(f"  ✗ {index_name} — no data (rate-limited or unavailable)")
             time.sleep(1.0)
             continue
         for sym in syms:
-            upsert(conn, sym, sector_label, "nse_index")
+            upsert(conn, sym, sector_label, "nse_index", index_priority=priority)
             loaded += 1
-        print(f"  ✓ {index_name} → {sector_label} ({len(syms)} stocks)")
+        print(f"  ✓ {index_name} → {sector_label} (priority={priority}, {len(syms)} stocks)")
         time.sleep(0.25)
     conn.commit()
     return loaded
@@ -957,25 +1221,30 @@ def manual_add(symbol: str, sector: str, path: str = DB_PATH):
 
 def load_from_extended_map(conn: sqlite3.Connection) -> int:
     """
-    Load ~1800 mid/small-cap stocks from the hardcoded EXTENDED_SECTOR_MAP.
+    Load mid/small-cap stocks from the hardcoded EXTENDED_SECTOR_MAP.
     Used when NSE's EQUITY_L.csv is unavailable (blocked/moved).
     Priority: higher than 'static', lower than 'nse_master' and 'nse_index'.
-    Entries already present with source 'nse_index' or 'nse_master' are NOT overwritten.
+    Entries already present with source 'nse_index*' or 'nse_master*' are NOT overwritten.
     """
     loaded = 0
     for sym, sector in EXTENDED_SECTOR_MAP.items():
         existing = conn.execute(
             "SELECT source FROM sector_map WHERE symbol=?", (sym.upper(),)
         ).fetchone()
-        if existing is None:
+        ex_src = existing["source"] if existing else None
+        if ex_src is None:
             # New symbol — insert
             conn.execute(
                 "INSERT INTO sector_map(symbol, sector, source, updated_at) VALUES(?,?,?,?)",
                 (sym.upper(), sector, "extended", datetime.now().isoformat())
             )
             loaded += 1
-        elif existing["source"] not in ("nse_index", "nse_master", "nse_master_api", "manual"):
-            # Only overwrite lower-priority 'static' entries
+        elif ex_src == "manual":
+            pass  # manual entries are never overwritten
+        elif ex_src.startswith("nse_index") or ex_src in ("nse_master", "nse_master_api"):
+            pass  # higher-priority sources are never overwritten by extended
+        else:
+            # Overwrite lower-priority 'static' entries
             conn.execute(
                 "UPDATE sector_map SET sector=?, source=?, updated_at=? WHERE symbol=?",
                 (sector, "extended", datetime.now().isoformat(), sym.upper())
