@@ -20,11 +20,10 @@ Routers preserved:
 # ─────────────────────────────────────────────────────────────────
 # STDLIB / THIRD-PARTY
 # ─────────────────────────────────────────────────────────────────
-import gzip, io, json, math, os, pathlib, sqlite3, threading, time, urllib.parse
+import gzip, json as _json, math, os, pathlib, sqlite3, threading, time, urllib.parse
 import io as _io
-import json as _json
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from datetime import datetime as _dt
 from typing import Dict, List, Optional, Tuple
@@ -35,9 +34,21 @@ import requests
 import yfinance as yf
 from fastapi import BackgroundTasks, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
+from scipy.signal import argrelmin as _argrelmin
 from scipy.stats import rankdata
+
+# ── Sector DB (full 2500-stock NSE mapping) ───────────────────────
+from sector_db import (
+    get_sector_db,
+    _load_cache as _load_sector_db_cache,
+    get_all_mappings   as _sector_get_all,
+    get_coverage_stats as _sector_get_stats,
+    manual_add         as _sector_manual_add,
+    reload_cache       as _sector_reload_cache,
+    build              as _sector_build,
+)
 
 
 # ═════════════════════════════════════════════════════════════════
@@ -79,16 +90,18 @@ class ScoreConfig:
     RS_WEIGHT_20D_BEAR:     float = 0.85
 
     # ── Score component weights (sum = 1.0 each group) ──
-    W_RS:                   float = 0.18
-    W_RS_SECT:              float = 0.07
-    W_MOMENTUM:             float = 0.12
-    W_VOLUME:               float = 0.14
-    W_COIL:                 float = 0.12
-    W_MA:                   float = 0.10
-    W_PROXIMITY:            float = 0.10
-    W_VCP:                  float = 0.08
-    W_DARVAS:               float = 0.05
-    W_MICROSTRUCTURE:       float = 0.04   # CLV + BB + VC + spread
+    # Rebalanced for pre-move detection: VCP/Coil/Proximity are predictive,
+    # RS/Momentum are lagging confirming signals.
+    W_RS:                   float = 0.12   # reduced — lagging, measures past strength
+    W_RS_SECT:              float = 0.05   # reduced
+    W_MOMENTUM:             float = 0.08   # reduced — EMA acceleration is lagging
+    W_VOLUME:               float = 0.10   # reduced — confirmed vol = move already started
+    W_COIL:                 float = 0.20   # DOUBLED — core pre-move compression signal
+    W_MA:                   float = 0.10   # unchanged — structural filter
+    W_PROXIMITY:            float = 0.12   # increased — WHERE price is vs trigger matters most
+    W_VCP:                  float = 0.13   # increased — best pattern predictor of imminent move
+    W_DARVAS:               float = 0.06   # increased — tight box = coiling energy
+    W_MICROSTRUCTURE:       float = 0.04   # unchanged: CLV + BB + VC + spread
 
     # ── Signal coverage floor (fraction of valid signals required) ──
     COVERAGE_FLOOR:         float = 0.40
@@ -96,8 +109,8 @@ class ScoreConfig:
     # ── Interaction term amplifier ────────────────────────────────
     # When RS + volume + proximity all fire together the score gets a
     # multiplicative lift.  Cap prevents runaway scores.
-    INTERACTION_FLOOR:      float = 0.60   # each signal must exceed this to count
-    INTERACTION_BOOST_MAX:  float = 0.12   # max fractional boost (12 %)
+    INTERACTION_FLOOR:      float = 0.50   # was 0.60 — lower so more setups get the boost
+    INTERACTION_BOOST_MAX:  float = 0.14   # was 0.12 — slightly bigger boost for aligned signals
 
     # ── Calibration-to-weight adaptation ─────────────────────────
     # How aggressively learned win-rates nudge static weights.
@@ -107,8 +120,8 @@ class ScoreConfig:
     # ── Universe breakout saturation guard ───────────────────────
     # If this fraction of the universe is already tagged Breakout,
     # marginal breakout probability gets discounted.
-    BO_SATURATION_FLOOR:    float = 0.50   # start discounting above 50 %
-    BO_SATURATION_DISCOUNT: float = 0.30   # max discount applied at 100 %
+    BO_SATURATION_FLOOR:    float = 0.65   # was 0.50 — only discount when 65%+ are breakouts
+    BO_SATURATION_DISCOUNT: float = 0.15   # was 0.30 — gentler discount
 
     # ── Sector distribution penalty ───────────────────────────────
     # Breakout score is discounted if sector 5D return is in bottom quartile
@@ -122,7 +135,7 @@ class ScoreConfig:
     LIQ_CAP:                float = 15.0
     STAB_CAP:               float = 20.0
     EXT_CAP:                float = 15.0
-    ALREADY_BO_CAP:         float = 18.0
+    ALREADY_BO_CAP:         float = 6.0    # reduced: don't kill stocks that are actually breaking out
     VIX_PENALTY_FLOOR:      float = -8.0
     VIX_BONUS_CAP:          float = 2.0
     BREADTH_PENALTY_FLOOR:  float = -8.0
@@ -144,12 +157,30 @@ class ScoreConfig:
     CANDLE_HAMMER_BODY_RATIO:  float = 0.10
     CANDLE_HAMMER_LOWER_MULT:  float = 2.0
     CANDLE_UPPER_WICK_MAX:     float = 0.40
+    CANDLE_HAMMER_CLOSE_RATIO: float = 0.60   # close must be in top 60% of bar range
+    CANDLE_BULL_DOJI_WICK_MULT:float = 1.5    # lower wick must be > this × upper wick
+    CANDLE_MSTAR_BODY_RATIO:   float = 0.50   # prev bar body / range must exceed this
+    CANDLE_GAP_BODY_MULT:      float = 0.50   # gap must exceed prev_body × this
+
+    # ── Reversal detection ──
+    REVERSAL_MIN_WASHOUT_ATR:  float = 1.5    # washout_depth >= this ATR to qualify
+    REVERSAL_TAIL_MIN_POS:     float = 0.40   # t1_close_pos must be >= this to qualify
+
+    # ── Intraday breakout volume minimum ──
+    INTRADAY_BO_VOL_MIN:       float = 0.30   # vol_confirm session guard (alias)
+
+    # ── Sweep ──
+    SWEEP_WICK_MIN_ATR:        float = 0.50   # lower wick must be >= this × ATR
+
+    # ── Calibration breadth batch / extraction prefilter ──
+    CALIB_BREADTH_BATCH:       int   = 20     # batch size for breadth_hist computation
+    EXTRACT_MIN_BARS_PREFILTER:int   = 30     # min bars before adding to raw_data_cache
 
     # ── Fetch / extraction ──
-    FETCH_WORKERS:          int   = 4
-    FETCH_DELAY:            float = 0.15
-    FETCH_RETRIES:          int   = 4
-    FETCH_BACKOFF:          float = 0.5
+    FETCH_WORKERS:          int   = 5      # reduced: Upstox historical API silently throttles >5 concurrent
+    FETCH_DELAY:            float = 0.12   # increased: breathing room between requests per worker
+    FETCH_RETRIES:          int   = 5      # extra retry since empty-candle is now retried too
+    FETCH_BACKOFF:          float = 1.0    # longer backoff on retries
     LIVE_QUOTE_CHUNK:       int   = 50
     LIVE_QUOTE_DELAY:       float = 0.12
     HISTORY_DAYS:           int   = 600
@@ -159,8 +190,8 @@ class ScoreConfig:
     # ── Cache TTLs (seconds) ──
     MASTER_TTL:             int   = 3_600
     NIFTY50_TTL:            int   = 14_400
-    MKT_CONTEXT_TTL:        int   = 900
-    LIVE_REFRESH_SEC:       int   = 60
+    MKT_CONTEXT_TTL:        int   = 600    # was 900 — refresh market context every 10 min
+    LIVE_REFRESH_SEC:       int   = 30     # was 60 — refresh live quotes every 30s
 
     # ── Calibration / DB ──
     FORWARD_RETURN_DAYS:    int   = 5
@@ -188,8 +219,8 @@ class ScoreConfig:
     WR_STAB_COEF:           float = 0.10
 
     # ── Regime penalty factors (applied to coiling quality nf) ───────────
-    REGIME_BEAR_FACTOR:     float = 8.0
-    REGIME_CHOP_FACTOR:     float = 4.0
+    REGIME_BEAR_FACTOR:     float = 5.0    # was 8.0 — softer: strong coils still surface in bear
+    REGIME_CHOP_FACTOR:     float = 2.5    # was 4.0 — softer: chop doesn't kill pre-move setups
 
     # ── VIX falling extra penalty scale ──────────────────────────────────
     VIX_FALL_EXTRA:         float = 1.5
@@ -217,6 +248,7 @@ class ScoreConfig:
     # When price has overshot ideal entry, how much harder to penalise.
     # 1.0 = symmetric; >1.0 = penalise overshoot more than undershoot.
     PROX_OVERSHOOT_MULT:    float = 1.3
+    PROX_BO_OVERSHOOT_MULT: float = 2.5   # steeper decay when price is above base_hi for Breakout/Coiling
 
     # ── Darvas ideal box duration (bars) ─────────────────────────────────
     # time_score = bars_in_box / (DARVAS_IDEAL_BARS * 2).  A box that has
@@ -236,8 +268,204 @@ class ScoreConfig:
     INST_FALLBACK_CENTRE:   float = 1.15   # typical 5d/20d vol ratio
     INST_FALLBACK_SCALE:    float = 0.30   # IQR-equivalent spread
 
+    # ── VCP detection thresholds ───────────────────────────────────────────
+    VCP_DETECT_SCORE_THRESH:       float = 0.45  # was 0.55 — detect VCP earlier, before it's obvious
+    VCP_DETECT_CONTRACTION_THRESH: float = 0.32  # was 0.40 — earlier detection
+
+    # ── Candle confirmation gate ──────────────────────────────────────────
+    # Candle patterns on an incomplete live bar are unreliable.  Below this
+    # fraction of the session the cdl_sc is zeroed; patterns are still detected
+    # and reported but do not contribute to score.
+    CANDLE_CONFIRM_FRAC:    float = 0.95   # ~last 19 min of 375-min session
+
+    # ── Volume confirmation session guard ─────────────────────────────────
+    # vol_confirm and Breakout classification are suppressed before this
+    # fraction of the session has elapsed — pace-adjusting early-session volume
+    # reduces but does not eliminate noise at open.
+    VOL_CONFIRM_MIN_FRAC:   float = 0.30   # ~first 112 min (09:15 → ~11:07)
+
+    # ── Score gate for entry/target/stop output ───────────────────────────
+    # Below this score the Entry/Target/Stop fields are set to None and the
+    # EntryNote explains the stock is watchlist-only.  Prevents false precision
+    # on weak setups and keeps the screener output clean.
+    MIN_SCORE_FOR_LEVELS:   float = 38.0  # was 45 — show levels for more candidates
+
+    # ── ATR expansion onset reclassification ──────────────────────────────
+    # atr_exp_feature fires at the *start* of ATR expansion (move already
+    # beginning).  When combined with vol_confirm it acts as a confirmation
+    # bonus rather than a pre-move coil signal.  This multiplier scales it
+    # down when vol_confirm is absent.
+    ATR_EXP_NOCONFIRM_SCALE: float = 0.25  # discount factor without vol confirm
+
+    # ── Intraday market circuit breaker ──────────────────────────────────
+    # If Nifty's intraday change is below this threshold, all Breakout signals
+    # are downgraded to Pullback and EntryNote warns of market-wide weakness.
+    NIFTY_INTRADAY_KILL:    float = -0.020  # −2.0 %
+
+    # ── Penalty magnitude constants (previously hardcoded in function bodies) ─
+    MARKET_CB_PENALTY:      float = 6.0    # flat penalty when circuit breaker fires
+    BREADTH_FALLBACK_PENALTY: float = 8.0  # breadth penalty when Nifty below 20DMA
+    VIX_TANH_SCALE:         float = 6.0    # tanh multiplier for VIX z-score penalty
+
+    # ── Reversal sub-score weights (must sum to 1.0) ──────────────────────
+    REV_W_RSI:   float = round(1/3,  10)   # 1/3
+    REV_W_COIL:  float = round(1/4,  10)   # 1/4
+    REV_W_PROX:  float = round(1/6,  10)   # 1/6
+    REV_W_SPR:   float = round(1/12, 10)   # 1/12
+    REV_W_VOL:   float = round(1/24, 10)   # 1/24
+    REV_W_WASH:  float = round(1/12, 10)   # 1/12
+    REV_W_TAIL:  float = round(1/24, 10)   # 1/24
+
+    # ── Darvas sub-score weights ───────────────────────────────────────────
+    DARVAS_W_TIGHT: float = 0.40
+    DARVAS_W_POS:   float = 0.35
+    DARVAS_W_TIME:  float = 0.25
+    # Fallback weights (when box_high is NaN): raw_score vs position_in_box
+    DARVAS_FB_W_RAW: float = 0.65
+    DARVAS_FB_W_POS: float = 0.35
+
+    # ── Weekly trend alignment ────────────────────────────────────────────
+    # Breakout signals are discounted when the weekly EMA9 < weekly EMA20
+    # (daily data resampled to weekly).  This flag enables the check;
+    # the discount is applied as a penalty in compute_penalties.
+    WEEKLY_TREND_CHECK:     bool  = True
+    WEEKLY_TREND_PENALTY:   float = 6.0    # was 12 — softer counter-trend penalty
+
+    # ── Pullback sub-type thresholds ─────────────────────────────────────
+    # Derived from EMA distance in ATR units (stock's own distribution).
+    # PB_EMA_ATR_BAND: price within this ATR of EMA20/EMA9 → "PB-EMA" (at support)
+    # PB_DRY_VOL_FRAC: vol below this fraction of 40th-pct ratio → "PB-Dry" (vol drying)
+    # These are ATR/vol multiples — not price levels, so they auto-scale per stock.
+    # "PB-Deep" = real pullback but not near EMA = deeper correction, still above EMA50
+    # "Base"    = no real pullback detected = just range-bound / no signal
+    # The band is already derived from the stock's own P20-P80 dist in compute_signals;
+    # we just rename the branches here — no new threshold needed.
+
+    # ── VolClimax detection multipliers ──────────────────────────────────
+    # Vol climax = vol_ratio exceeds P-rank threshold AND RSI exceeds its
+    # own P-rank threshold AND price extended beyond ext_p90.
+    # All three are derived from each stock's own distribution — no fixed levels.
+    VOL_CLIMAX_PRANK:       float = 0.90   # vol must be in top 10% of its own history
+    VOL_CLIMAX_RSI_PRANK:   float = 0.70   # RSI must be in top 30% of its own history
+    VOL_CLIMAX_EXT_PRANK:   float = 0.90   # price extension must be in top 10% of its own history
+
+    # ── Resistance proximity gate for target price ────────────────────────
+    # Target is capped below a prior high when tgt lands within this
+    # fraction of the resistance level.  Derived from the stock's own
+    # ATR as a multiple (1 ATR tolerance), not a fixed % like 2%.
+    TGT_RESIST_ATR_BUFFER:  float = 1.0    # if tgt is within 1 ATR of a prior high → cap it
+
+    # ── Minimum calibration rows before Kelly is shown ───────────────────
+    # Below this count the formula win-rate is made-up; suppress the output.
+    KELLY_MIN_CALIB_ROWS:   int   = 10
+
+    # ── Compression signal field label ────────────────────────────────────
+    # Rename "BreakoutProb" to "CompressionScore" in the return dict so
+    # it's not misread as a probability.  Both backend and frontend use this.
+    # (Actual rename is in aggregate_score return dict.)
+
+    # ── News freshness window ─────────────────────────────────────────────
+    # Articles older than this many days are filtered out regardless of match.
+    NEWS_MAX_AGE_DAYS:      int   = 7
+
+    # ── Pullback entry note: max ATR distance above EMA20 before note warns ─
+    # If LTP > EMA20 + this multiple × ATR, the entry note warns the user
+    # they are not at support yet.  Derived from proximity lambda logic.
+    PB_NOTE_EMA_ATR_WARN:   float = 1.0    # 1 ATR above EMA20 = warn
+
+    # ── Candle pattern point values ────────────────────────────────────────
+    # These sum is capped at 10 in detect_candle_patterns.
+    # Ordering follows strength of signal (Engulfing > Hammer ≈ MorningStar > …)
+    CANDLE_PTS_ENGULFING:   float = 3.0
+    CANDLE_PTS_HAMMER:      float = 2.5
+    CANDLE_PTS_MORNING_STAR:float = 2.5
+    CANDLE_PTS_OUTSIDE_BAR: float = 2.0
+    CANDLE_PTS_STRONG_GREEN:float = 2.0
+    CANDLE_PTS_GAP_CONTINUE:float = 2.0
+    CANDLE_PTS_INSIDE_BAR:  float = 1.5
+    CANDLE_PTS_BULL_DOJI:   float = 1.0
+
+    # ── Breakout volume threshold percentile ───────────────────────────────
+    # Day volume must exceed this percentile of last-60-bar distribution
+    # for a bar to count as a confirmed volume breakout.
+    BO_VOL_PERCENTILE:      float = 0.85
+
+    # ── RSI fallback values (used when < MIN_BARS_RSI bars available) ─────
+    RSI_OB_FALLBACK:        float = 80.0   # overbought threshold fallback
+    RSI_OS_FALLBACK:        float = 42.0   # oversold threshold fallback (P35 proxy)
+    RSI_MID_FALLBACK:       float = 55.0   # neutral midpoint fallback (P60 proxy)
+    RSI_LOW_FALLBACK:       float = 25.0   # deep oversold fallback (P10 proxy)
+    MIN_BARS_RSI:           int   = 20     # min bars required for RSI quantile computation
+
+    # ── Percentile lookback for per-stock quantile signals ─────────────────
+    # Most per-stock percentile windows use PERCENTILE_WINDOW_SHORT (60).
+    # A handful of structural patterns (VCP, Darvas) use their own fixed
+    # windows — those are documented at the call site.
+    PERCENTILE_WINDOW_PERSHORT: int = 60   # alias used for tail(60) sites
+
+    # ── Coiling score composite ───────────────────────────────────────────
+    # CoilingScore = weighted average of pure pre-move compression signals.
+    # Computed independently of vol_confirm so it scores BEFORE the move starts.
+    # Rebalanced: CLV (institutional buying INTO compression) and VCP (Minervini
+    # pattern) are the two strongest pre-move predictors. BB and VDU confirm
+    # compression is happening but alone are less predictive.
+    COIL_W_BB:          float = 0.18   # was 0.25 — BB squeeze confirms compression
+    COIL_W_VDU:         float = 0.15   # was 0.22 — vol dryup confirms compression
+    COIL_W_CLV:         float = 0.27   # was 0.15 — INCREASED: smart money buying into base
+    COIL_W_VCP:         float = 0.27   # was 0.20 — INCREASED: Minervini pattern = strongest predictor
+    COIL_W_SC:          float = 0.08   # was 0.10 — spread compression + rising close
+    COIL_W_VC:          float = 0.05   # was 0.08 — ATR contraction ratio
+
+    # Minimum coiling score (0-100) to classify a stock as "Coiling" setup
+    COIL_SETUP_THRESH:  float = 52.0   # was 58 — capture more candidates before they move
+
+    # ── Signal persistence (multi-day coil streak) ────────────────────────
+    # How many consecutive days BB squeeze AND vol dryup must both be in the
+    # top COIL_PERSIST_PRANK fraction of the universe to earn a streak bonus.
+    COIL_PERSIST_PRANK: float = 0.60   # was 0.65 — slightly more lenient to catch more candidates
+    COIL_PERSIST_MIN_DAYS: int = 2     # was 3 — start rewarding after 2 days, not 3
+    COIL_PERSIST_BONUS_CAP: float = 8.0  # was 6.0 — bigger reward for multi-day compression
+
+    # ── Adaptive volume weighting ─────────────────────────────────────────
+    # When vol_confirm is False (pre-move), volume weight is redistributed to
+    # coil + VCP instead of penalising the stock for lacking current volume.
+    # vol_weight_confirmed   = W_VOLUME (unchanged when breakout confirmed)
+    # vol_weight_unconfirmed = W_VOLUME * VOL_WEIGHT_UNCONFIRMED_SCALE
+    # The freed weight flows into coil and VCP proportionally.
+    VOL_WEIGHT_UNCONFIRMED_SCALE: float = 0.20   # was 0.40 — pre-move vol is noise, not signal
+    COIL_WEIGHT_BOOST:            float = 0.09   # freed weight → coil (bigger pre-move boost)
+    VCP_WEIGHT_BOOST:             float = 0.09   # freed weight → VCP  (bigger pre-move boost)
+
+    # ── compute_cs_ranks minimum bar guards ────────────────────────────────
+    # Derived from the indicator windows each cross-sectional signal needs:
+    #   bbr  (BB squeeze) : BB_WINDOW + 10  → a settled BB + room to assess
+    #   vdr  (vol dryup)  : ATR_FAST + ATR_SLOW → enough rolling vol history
+    #   clvr (CLV accum)  : BB_WINDOW + 5   → 20-bar rolling sum + headroom
+    #   vcpr (VCP)        : MIN_BARS         → hard floor in detect_vcp
+    #   breadth           : BB_WINDOW        → EMA20 must be settled
+    # These are computed as properties so they update if windows change.
+    @property
+    def CS_MIN_BARS_BB(self)  -> int: return self.BB_WINDOW + 10
+    @property
+    def CS_MIN_BARS_VDR(self) -> int: return self.ATR_FAST + self.ATR_SLOW
+    @property
+    def CS_MIN_BARS_CLV(self) -> int: return self.BB_WINDOW + 5
+    @property
+    def CS_MIN_BARS_VCP(self) -> int: return self.MIN_BARS
+    @property
+    def CS_MIN_BARS_BRD(self) -> int: return self.BB_WINDOW
+
 
 SCORE_CFG = ScoreConfig()
+
+# Startup assertion: reversal weights must sum to 1.0 (guards against future drift).
+_rev_w_sum = (SCORE_CFG.REV_W_RSI + SCORE_CFG.REV_W_COIL + SCORE_CFG.REV_W_PROX +
+              SCORE_CFG.REV_W_SPR + SCORE_CFG.REV_W_VOL + SCORE_CFG.REV_W_WASH +
+              SCORE_CFG.REV_W_TAIL)
+assert abs(_rev_w_sum - 1.0) < 1e-9, (
+    f"Reversal weights must sum to 1.0; got {_rev_w_sum:.10f}. "
+    "Update ScoreConfig.REV_W_* fields to correct fractions."
+)
 
 # ═════════════════════════════════════════════════════════════════
 # 2. APP + MIDDLEWARE
@@ -269,67 +497,199 @@ app.include_router(ml_router)
 # 3. SECTOR MAP
 # ═════════════════════════════════════════════════════════════════
 
+# ── NSE index → yfinance ticker (for sector return computation) ──
 SECTOR_TICKERS: Dict[str, str] = {
-    "IT":          "^CNXIT",   "Bank":        "^NSEBANK",   "Auto":     "^CNXAUTO",
-    "Pharma":      "^CNXPHARMA","Metal":       "^CNXMETAL",  "Energy":   "^CNXENERGY",
-    "Infra":       "^CNXINFRA", "FMCG":        "^CNXFMCG",  "Realty":   "^CNXREALTY",
-    "PSUBank":     "^CNXPSUBANK","Chemicals":  "^CNXCHEMICALS",
-    "ConsumerDur": "^CNXCONSUMER","Insurance": "^CNXFINSERVICE",
-    "Telecom":     "^CNXTELECOM",
-    "Retail":      "^CNXCONSUMER",   # nearest proxy (NSE has no separate Retail index)
-    "Logistics":   "^CNXINFRA",      # nearest proxy
+    "IT":          "^CNXIT",      "Bank":        "^NSEBANK",
+    "Auto":        "^CNXAUTO",    "Pharma":      "^CNXPHARMA",
+    "Metal":       "^CNXMETAL",   "Energy":      "^CNXENERGY",
+    "Infra":       "^CNXINFRA",   "FMCG":        "^CNXFMCG",
+    "Realty":      "^CNXREALTY",  "PSUBank":     "^CNXPSUBANK",
+    "Chemicals":   "^CNXCHEMICALS","ConsumerDur": "^CNXCONSUMER",
+    "Insurance":   "^CNXFINSERVICE","Telecom":   "^CNXTELECOM",
+    "Retail":      "^CNXCONSUMER",             # nearest proxy
+    "Logistics":   "^CNXINFRA",                # nearest proxy
 }
 
-STOCK_SECTOR_MAP: Dict[str, str] = {
+# ── NSE equity-stockIndices index name → internal sector label ───
+# These match what NSE's /api/equity-stockIndices?index=<name> returns.
+_NSE_INDEX_TO_SECTOR: Dict[str, str] = {
+    "NIFTY IT":                   "IT",
+    "NIFTY BANK":                 "Bank",
+    "NIFTY AUTO":                 "Auto",
+    "NIFTY PHARMA":               "Pharma",
+    "NIFTY METAL":                "Metal",
+    "NIFTY ENERGY":               "Energy",
+    "NIFTY INFRASTRUCTURE":       "Infra",
+    "NIFTY FMCG":                 "FMCG",
+    "NIFTY REALTY":               "Realty",
+    "NIFTY PSU BANK":             "PSUBank",
+    "NIFTY CHEMICALS":            "Chemicals",
+    "NIFTY CONSUMER DURABLES":    "ConsumerDur",
+    "NIFTY FINANCIAL SERVICES":   "Insurance",
+    "NIFTY INDIA DIGITAL":        "Telecom",
+    "NIFTY INDIA CONSUMPTION":    "Retail",
+    "NIFTY MIDSMALL HEALTHCARE":  "Pharma",
+    "NIFTY MIDSMALL IT & TELECOM":"IT",
+}
+
+# ── Dynamic STOCK_SECTOR_MAP ──────────────────────────────────────
+# Populated at startup (and periodically refreshed) by fetching the
+# constituent list of every NSE sector index via the same session-based
+# API pattern used by get_nifty50_live().  A stock may appear in multiple
+# indices; the LAST sector in _NSE_INDEX_TO_SECTOR iteration wins, which
+# is fine because sector return is used only for relative-strength context,
+# not as a strict classification.
+#
+# The static fallback dict below is used:
+#   (a) on first startup before the async fetch completes, and
+#   (b) whenever the NSE API returns fewer than 5 stocks for an index
+#       (i.e. the response is clearly bad / rate-limited).
+_SECTOR_MAP_LOCK = threading.Lock()
+
+_STATIC_SECTOR_FALLBACK: Dict[str, str] = {
+    # IT
     "TCS":"IT","INFY":"IT","WIPRO":"IT","HCLTECH":"IT","TECHM":"IT",
     "LTIM":"IT","MPHASIS":"IT","COFORGE":"IT","PERSISTENT":"IT","OFSS":"IT",
     "KPITTECH":"IT","TATAELXSI":"IT","MASTEK":"IT","HEXAWARE":"IT",
+    # Bank (private)
     "HDFCBANK":"Bank","ICICIBANK":"Bank","KOTAKBANK":"Bank","AXISBANK":"Bank",
     "INDUSINDBK":"Bank","FEDERALBNK":"Bank","IDFCFIRSTB":"Bank","AUBANK":"Bank",
     "BAJFINANCE":"Bank","BAJAJFINSV":"Bank","RBLBANK":"Bank","YESBANK":"Bank",
     "CSBBANK":"Bank","DCBBANK":"Bank","KARURVYSYA":"Bank",
+    # PSU Bank
     "SBIN":"PSUBank","BANKBARODA":"PSUBank","PNB":"PSUBank","CANBK":"PSUBank",
     "UNIONBANK":"PSUBank","BANKINDIA":"PSUBank","MAHABANK":"PSUBank",
     "INDIANB":"PSUBank","UCOBANK":"PSUBank","CENTRALBK":"PSUBank",
+    # Auto
     "MARUTI":"Auto","TATAMOTORS":"Auto","M&M":"Auto","BAJAJ-AUTO":"Auto",
     "HEROMOTOCO":"Auto","EICHERMOT":"Auto","TVSMOTORS":"Auto",
     "MOTHERSON":"Auto","BOSCHLTD":"Auto","BHARATFORG":"Auto","BALKRISIND":"Auto",
     "APOLLOTYRE":"Auto","MRF":"Auto","CEATLTD":"Auto","EXIDEIND":"Auto",
+    # Pharma
     "SUNPHARMA":"Pharma","DRREDDY":"Pharma","CIPLA":"Pharma","DIVISLAB":"Pharma",
     "TORNTPHARM":"Pharma","AUROPHARMA":"Pharma","APOLLOHOSP":"Pharma",
     "LUPIN":"Pharma","BIOCON":"Pharma","ALKEM":"Pharma","GLENMARK":"Pharma",
     "IPCALAB":"Pharma","NATCOPHARM":"Pharma","LAURUSLABS":"Pharma",
     "FORTIS":"Pharma","METROPOLIS":"Pharma","LALPATHLAB":"Pharma",
+    # Metal
     "TATASTEEL":"Metal","JSWSTEEL":"Metal","HINDALCO":"Metal","SAIL":"Metal",
     "VEDL":"Metal","COALINDIA":"Metal","NMDC":"Metal","JINDALSTEL":"Metal",
     "APLAPOLLO":"Metal","RATNAMANI":"Metal","NATIONALUM":"Metal","MOIL":"Metal",
+    # Energy
     "ONGC":"Energy","NTPC":"Energy","POWERGRID":"Energy","BPCL":"Energy",
     "IOC":"Energy","GAIL":"Energy","RELIANCE":"Energy","HPCL":"Energy",
     "PETRONET":"Energy","OIL":"Energy","HINDPETRO":"Energy","MGL":"Energy",
     "IGL":"Energy","TATAPOWER":"Energy","ADANIGREEN":"Energy","ADANIENT":"Energy",
+    # Infra
     "LT":"Infra","ADANIPORTS":"Infra","IRFC":"Infra","RVNL":"Infra",
     "IRCON":"Infra","NBCC":"Infra","ULTRACEMCO":"Infra","SHREECEM":"Infra",
     "AMBUJACEMENT":"Infra","ACC":"Infra","SIEMENS":"Infra","ABB":"Infra",
     "BEL":"Infra","HAL":"Infra","BHEL":"Infra","CUMMINSIND":"Infra",
     "THERMAX":"Infra","KEC":"Infra","KALPATPOWR":"Infra","VOLTAS":"Infra",
+    # FMCG
     "HINDUNILVR":"FMCG","ITC":"FMCG","NESTLEIND":"FMCG","BRITANNIA":"FMCG",
     "DABUR":"FMCG","MARICO":"FMCG","GODREJCP":"FMCG","ASIANPAINT":"FMCG",
     "EMAMILTD":"FMCG","COLPAL":"FMCG","TATACONSUM":"FMCG","UBL":"FMCG",
     "RADICO":"FMCG","VBL":"FMCG",
+    # Realty
     "DLF":"Realty","LODHA":"Realty","OBEROIRLTY":"Realty","PHOENIXLTD":"Realty",
     "GODREJPROP":"Realty","PRESTIGE":"Realty","BRIGADE":"Realty","SOBHA":"Realty",
+    # Chemicals
     "PIDILITIND":"Chemicals","SRF":"Chemicals","DEEPAKNTR":"Chemicals",
     "AARTIIND":"Chemicals","NAVINFLUOR":"Chemicals","ALKYLAMINE":"Chemicals",
     "FINEORG":"Chemicals","VINATIORGA":"Chemicals","BALRAMCHIN":"Chemicals",
+    # Insurance / FinServices
     "SBILIFE":"Insurance","HDFCLIFE":"Insurance","ICICIPRULI":"Insurance",
     "LICIHSGFIN":"Insurance","MUTHOOTFIN":"Insurance","CHOLAFIN":"Insurance",
     "ICICIGI":"Insurance","NIACL":"Insurance","GICRE":"Insurance",
     "HDFCAMC":"Insurance","NAM-INDIA":"Insurance","ABSLAMC":"Insurance",
+    # Telecom
     "BHARTIARTL":"Telecom","IDEA":"Telecom","TATACOMM":"Telecom","INDUSTOWER":"Telecom",
+    # ConsumerDur
     "HAVELLS":"ConsumerDur","CROMPTON":"ConsumerDur","TITAN":"ConsumerDur",
+    # Retail / Logistics
     "TRENT":"Retail","DMART":"Retail",
     "CONCOR":"Logistics","BLUEDART":"Logistics",
 }
+
+# Live map starts as a copy of the fallback; refreshed by _refresh_sector_map()
+STOCK_SECTOR_MAP: Dict[str, str] = dict(_STATIC_SECTOR_FALLBACK)
+
+_sector_map_last_refresh: float = 0.0
+_SECTOR_MAP_TTL: int = 6 * 3600   # refresh every 6 hours
+
+
+def _fetch_index_constituents(session: requests.Session, index_name: str) -> List[str]:
+    """Return trading symbols in an NSE index, or [] on failure."""
+    url = "https://www.nseindia.com/api/equity-stockIndices"
+    try:
+        r = session.get(url, params={"index": index_name}, timeout=12)
+        if r.status_code != 200:
+            return []
+        data = r.json().get("data", [])
+        syms = [
+            d["symbol"] for d in data
+            if d.get("symbol") and d["symbol"] != index_name.replace(" ", "")
+        ]
+        return syms if len(syms) >= 5 else []
+    except Exception:
+        return []
+
+
+def _refresh_sector_map() -> None:
+    """
+    Fetch constituent lists for every NSE sector index and rebuild
+    STOCK_SECTOR_MAP in-place.  Uses the same NSE session pattern as
+    get_nifty50_live() so it benefits from any existing cookies.
+
+    Thread-safe: guarded by _SECTOR_MAP_LOCK.
+    Falls back gracefully: if an index fetch fails or returns <5 stocks,
+    the existing mapping for those symbols is preserved.
+    """
+    global _sector_map_last_refresh
+
+    session = requests.Session()
+    session.headers.update({
+        "User-Agent":  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "Accept":      "application/json",
+        "Referer":     "https://www.nseindia.com/",
+        "Accept-Language": "en-US,en;q=0.9",
+    })
+    # Warm up the session to get NSE cookies (required for API calls)
+    try:
+        session.get("https://www.nseindia.com/", timeout=10)
+    except Exception:
+        pass   # proceed anyway; cookies may still arrive on the API call
+
+    new_map: Dict[str, str] = dict(_STATIC_SECTOR_FALLBACK)   # start from fallback
+    fetched_any = False
+
+    for index_name, sector_label in _NSE_INDEX_TO_SECTOR.items():
+        syms = _fetch_index_constituents(session, index_name)
+        if not syms:
+            continue   # keep existing / fallback entries for this sector
+        fetched_any = True
+        # A stock appearing in multiple indices gets the sector of the LAST
+        # index that covers it in iteration order.  For overlapping indices
+        # (e.g. NIFTY BANK and NIFTY FINANCIAL SERVICES), Bank takes
+        # precedence because it appears earlier in _NSE_INDEX_TO_SECTOR.
+        # If you need strict priority, reorder _NSE_INDEX_TO_SECTOR.
+        for sym in syms:
+            new_map[sym.upper()] = sector_label
+        time.sleep(0.15)   # be polite to NSE API
+
+    if fetched_any:
+        with _SECTOR_MAP_LOCK:
+            STOCK_SECTOR_MAP.clear()
+            STOCK_SECTOR_MAP.update(new_map)
+        _sector_map_last_refresh = time.time()
+
+
+def _maybe_refresh_sector_map() -> None:
+    """Call from startup and from get_market_context() to keep map fresh."""
+    if time.time() - _sector_map_last_refresh > _SECTOR_MAP_TTL:
+        threading.Thread(target=_refresh_sector_map, daemon=True,
+                         name="sector-map-refresh").start()
 
 # ═════════════════════════════════════════════════════════════════
 # 4. SHARED STATE
@@ -343,6 +703,7 @@ STATE: Dict = {
     "score_cache": {},
     "cs_rs_5d": {}, "cs_rs_20d": {},
     "cs_bb_squeeze": {}, "cs_vol_dryup": {}, "cs_clv_accum": {}, "cs_vcp": {},
+    "coil_streak_days": {},   # {sym: int} — consecutive days in top-tier BB+VDU
     "breadth_cache": None,
     "breadth_hist": [],
     "rs_div_hist": {},
@@ -352,6 +713,8 @@ STATE: Dict = {
     },
     "per_stock_winrate": {},
     "_setup_winrate": {},
+    "_setup_winrate_counts": {},   # raw count per setup type — Kelly gate uses this
+    "_stock_calib_counts":   {},   # raw count per ticker  — Kelly gate uses this
     "last_live_refresh": 0,
     "extraction_status": {
         "running": False, "done": 0, "total": 0,
@@ -397,7 +760,13 @@ def get_headers() -> Dict[str, str]:
 
 
 def get_sector(ticker: str) -> Optional[str]:
-    return STOCK_SECTOR_MAP.get(ticker.upper())
+    """
+    Lookup order:
+      1. In-memory STOCK_SECTOR_MAP  (live NSE index refresh, ~600 large-caps)
+      2. sector_map.db _DB_CACHE     (full ~2500-stock mapping, loaded at startup)
+      3. None                        (genuinely unknown — score degrades gracefully)
+    """
+    return get_sector_db(ticker, STOCK_SECTOR_MAP, _SECTOR_MAP_LOCK)
 
 
 # ═════════════════════════════════════════════════════════════════
@@ -420,6 +789,40 @@ def _rsi_wilder(close: pd.Series, period: int) -> pd.Series:
     loss  = (-delta.clip(upper=0)).ewm(alpha=1 / period, adjust=False).mean()
     rs    = gain / loss.replace(0, np.nan)
     return (100 - 100 / (1 + rs)).fillna(50)
+
+
+def _compute_coiling_score(
+    bb_cs: Optional[float],
+    vdu_cs: Optional[float],
+    clv_cs: Optional[float],
+    vcp_cs: Optional[float],
+    sc_feature: float,
+    vc_feature: float,
+) -> float:
+    """Pure pre-move coiling quality score (0–100).
+
+    Uses only compression/accumulation signals that are valid BEFORE the
+    breakout volume arrives.  Completely independent of vol_confirm so stocks
+    that are coiling but not yet breaking score high here, not low.
+
+    All inputs are [0,1] percentile ranks or normalised features.
+    Missing inputs (None) are replaced with 0.5 (neutral) so the score
+    degrades gracefully rather than crashing.
+    """
+    cfg = SCORE_CFG
+    bb  = bb_cs  if bb_cs  is not None else 0.5
+    vdu = vdu_cs if vdu_cs is not None else 0.5
+    clv = clv_cs if clv_cs is not None else 0.5
+    vcp = vcp_cs if vcp_cs is not None else 0.5
+    sc  = float(np.clip(sc_feature,  0.0, 1.0))
+    vc  = float(np.clip(vc_feature,  0.0, 1.0))
+    raw = (bb  * cfg.COIL_W_BB  +
+           vdu * cfg.COIL_W_VDU +
+           clv * cfg.COIL_W_CLV +
+           vcp * cfg.COIL_W_VCP +
+           sc  * cfg.COIL_W_SC  +
+           vc  * cfg.COIL_W_VC)
+    return float(np.clip(raw * 100.0, 0.0, 100.0))
 
 
 def percentile_last(series: pd.Series, window: int) -> float:
@@ -470,24 +873,25 @@ def detect_candle_patterns(
     patterns: List[str] = []; pts = 0.0
     cfg = SCORE_CFG
     if pc < po and c > o and c > po and o < pc:
-        patterns.append("Engulfing"); pts += 3
+        patterns.append("Engulfing"); pts += cfg.CANDLE_PTS_ENGULFING
     if (lower_w >= cfg.CANDLE_HAMMER_LOWER_MULT * body
-            and upper_w <= cfg.CANDLE_UPPER_WICK_MAX * rng and c > o):
-        patterns.append("Hammer"); pts += 2.5
+            and upper_w <= cfg.CANDLE_UPPER_WICK_MAX * rng and c > o
+            and (c - l) / rng >= cfg.CANDLE_HAMMER_CLOSE_RATIO):
+        patterns.append("Hammer"); pts += cfg.CANDLE_PTS_HAMMER
     if h <= ph and l >= pl:
-        patterns.append("InsideBar"); pts += 1.5
+        patterns.append("InsideBar"); pts += cfg.CANDLE_PTS_INSIDE_BAR
     if h > ph and l < pl and c > o and c > (h + l) / 2:
-        patterns.append("OutsideBar"); pts += 2
+        patterns.append("OutsideBar"); pts += cfg.CANDLE_PTS_OUTSIDE_BAR
     if (body / rng > cfg.CANDLE_STRONG_BODY_RATIO and c > o
             and (c - l) / rng > cfg.CANDLE_STRONG_CLOSE_RATIO):
-        patterns.append("StrongGreen"); pts += 2
-    if body / rng < cfg.CANDLE_HAMMER_BODY_RATIO and lower_w > 1.5 * upper_w:
-        patterns.append("BullDoji"); pts += 1
-    if pc < po and prev_body / prev_rng > 0.5 and c > o and c > (po + pc) / 2:
-        patterns.append("MorningStar"); pts += 2.5
-    _gap_min = max(prev_body * 0.5, prev_rng * 0.01)
+        patterns.append("StrongGreen"); pts += cfg.CANDLE_PTS_STRONG_GREEN
+    if body / rng < cfg.CANDLE_HAMMER_BODY_RATIO and lower_w > cfg.CANDLE_BULL_DOJI_WICK_MULT * upper_w:
+        patterns.append("BullDoji"); pts += cfg.CANDLE_PTS_BULL_DOJI
+    if pc < po and prev_body / prev_rng > cfg.CANDLE_MSTAR_BODY_RATIO and c > o and c > (po + pc) / 2:
+        patterns.append("MorningStar"); pts += cfg.CANDLE_PTS_MORNING_STAR
+    _gap_min = max(prev_body * cfg.CANDLE_GAP_BODY_MULT, prev_rng * 0.01)
     if o > pc + _gap_min and c > o:
-        patterns.append("GapContinue"); pts += 2
+        patterns.append("GapContinue"); pts += cfg.CANDLE_PTS_GAP_CONTINUE
     return min(pts, 10.0), patterns
 
 
@@ -496,13 +900,19 @@ def detect_candle_patterns(
 # ═════════════════════════════════════════════════════════════════
 
 def darvas_box_score(df: pd.DataFrame, atr_v: float) -> dict:
+    cfg  = SCORE_CFG
+    # FIX-6: Added position_in_box=0.5 (neutral) to null dict.  The fallback path
+    # in compute_signals calls darvas_r.get("position_in_box", 0.5) but this key
+    # was never present in the null dict, so it always returned 0.5 regardless of
+    # setup type — making the Breakout/Pullback inversion logic a no-op.
     null = {"darvas_score": 0.0, "box_high": np.nan, "box_low": np.nan,
-            "in_box": False, "bars_in_box": 0, "box_atr_ratio": np.nan}
+            "in_box": False, "bars_in_box": 0, "box_atr_ratio": np.nan,
+            "position_in_box": 0.5}
     if len(df) < 20:
         return null
     hh, hl, hc = df["high"], df["low"], df["close"]
     tr = pd.concat([(hh - hl), (hh - hc.shift(1)).abs(), (hl - hc.shift(1)).abs()], axis=1).max(axis=1)
-    _atr_v = float(tr.ewm(alpha=1 / SCORE_CFG.ATR_PERIOD, adjust=False).mean().iloc[-1]) \
+    _atr_v = float(tr.ewm(alpha=1 / cfg.ATR_PERIOD, adjust=False).mean().iloc[-1]) \
              if len(tr) >= 5 else atr_v
     _daily_med = float(tr.tail(20).median()) if len(tr) >= 20 else (_atr_v * 0.5)
     _bars_per_atr = max(3, int(_atr_v / (_daily_med + 1e-9)))
@@ -517,7 +927,7 @@ def darvas_box_score(df: pd.DataFrame, atr_v: float) -> dict:
         if float(hh.iloc[cs:ce].max()) > ch:
             continue
         _box_high = ch
-        _box_low = float(hl.iloc[ws:].min())
+        _box_low = float(hl.iloc[ws:i + 1].min())  # consolidation window only, not full tail
         _box_start = ws
         break
     if _box_high is None:
@@ -532,14 +942,17 @@ def darvas_box_score(df: pd.DataFrame, atr_v: float) -> dict:
     pos_score  = float(np.clip(1.0 - 4.0 * (pos_in_box - 0.5) ** 2, 0.0, 1.0))
     _coiling_frac = float(
         (hh.rolling(_confirm_n).max() <= hh.rolling(_confirm_n).max().shift(_confirm_n))
-        .fillna(False).tail(60).mean()
+        .tail(60).dropna().mean()
     ) if len(hh) >= 10 else 0.5
-    _typical_dur = max(int(_coiling_frac * 20), 3)
+    if np.isnan(_coiling_frac):
+        _coiling_frac = 0.5
+    _typical_dur = max(int(_coiling_frac * cfg.DARVAS_IDEAL_BARS), 3)
     time_score = float(np.clip(bars_in_box / (_typical_dur * 2.0 + 1e-9), 0.0, 1.0))
     darvas_score = round((tightness * 0.40 + pos_score * 0.35 + time_score * 0.25) * 10.0, 1)
     return {"darvas_score": darvas_score, "box_high": round(_box_high, 2),
             "box_low": round(_box_low, 2), "in_box": in_box,
-            "bars_in_box": bars_in_box, "box_atr_ratio": round(bar, 2)}
+            "bars_in_box": bars_in_box, "box_atr_ratio": round(bar, 2),
+            "position_in_box": round(float(np.clip(pos_in_box, 0.0, 1.0)), 4)}
 
 
 def bb_width_compression_score(c: pd.Series,
@@ -561,10 +974,10 @@ def bb_width_compression_score(c: pd.Series,
 def volume_dryup_score(v: pd.Series,
                         short: int = 5, long: int = 20) -> Tuple[float, float]:
     if len(v) < long + short:
-        return 1.0, 0.5
+        return 0.5, 0.5   # neutral: insufficient history
     v = v.replace(0, np.nan).dropna()
     if len(v) < long:
-        return 1.0, 0.5
+        return 0.5, 0.5   # neutral: insufficient history after NaN drop
     ratio  = float(v.tail(short).mean()) / (float(v.tail(long).mean()) + 1e-9)
     h_roll = (v.rolling(short).mean() / (v.rolling(long).mean() + 1e-9)).dropna().iloc[:-1]
     if len(h_roll) < 5:
@@ -658,8 +1071,15 @@ def detect_vcp(c: pd.Series, h: pd.Series, l: pd.Series,
     tight_sc = float(np.clip(1.0 - tight_r / (np.percentile(_th, 75) + 1e-9), 0.0, 1.0)) \
                if len(_th) >= 3 else float(np.clip(1.0 - tight_r / 3.0, 0.0, 1.0))
     pos_sc   = float(np.clip((float(c.iloc[-1]) - last_sl) / cons_rng, 0.0, 1.0))
-    vcp_score = float(np.clip(np.mean([contraction, vc_sc, vdu_sc, tight_sc, pos_sc]), 0.0, 1.0))
-    detected  = vcp_score >= 0.55 and len(recent) >= 2 and contraction >= 0.4
+    # Geometric mean of the 4 pattern conditions (contraction, compression, dryup, tightness).
+    # Geometric mean is correct here: ALL four must be present simultaneously.
+    # If any one is near-zero the composite collapses, unlike arithmetic mean which masks weak legs.
+    # pos_sc applied as a separate position gate (multiplicative) — VCP at range lows scores near zero.
+    _sub = np.array([contraction, vc_sc, vdu_sc, tight_sc], dtype=float)
+    _sub = np.clip(_sub, 1e-9, 1.0)
+    vcp_raw   = float(np.exp(np.log(_sub).mean()))   # geometric mean
+    vcp_score = float(np.clip(vcp_raw * pos_sc, 0.0, 1.0))
+    detected  = vcp_score >= SCORE_CFG.VCP_DETECT_SCORE_THRESH and len(recent) >= 2 and contraction >= SCORE_CFG.VCP_DETECT_CONTRACTION_THRESH
     return {
         "vcp_score": round(vcp_score, 3), "vcp_pullback_n": len(recent),
         "vcp_contraction": round(contraction, 3), "vcp_vol_comp": round(vc_sc, 3),
@@ -680,7 +1100,7 @@ def _vol_normalised_rs(c: pd.Series, bench_r5: Optional[float],
         return 0.5
     base6  = float(c.iloc[-7])  if len(c) >= 7  else float(c.iloc[0])
     base21 = float(c.iloc[-22]) if len(c) >= 22 else float(c.iloc[0])
-    end_p  = float(c.iloc[-2])
+    end_p  = float(c.iloc[-1])   # Bug 1 fix: use today's close, not yesterday's
     sr5    = end_p / base6  - 1 if base6  != 0 else 0.0
     sr20   = end_p / base21 - 1 if base21 != 0 else 0.0
     dr     = c.pct_change().dropna()
@@ -720,11 +1140,45 @@ def compute_indicators(df: pd.DataFrame, rsi_period: int) -> dict:
     sma200_n = min(cfg.SMA_TREND, len(c))
     sma200   = float(c.tail(sma200_n).mean())
     vol_ma20 = float(v.rolling(20).mean().iloc[-1]) if len(v) >= 20 else float(v.mean())
+
+    # ── Weekly trend (resample daily → weekly, check EMA9 > EMA20) ───────
+    # Used in compute_penalties to gate Breakout signals against the higher
+    # timeframe trend.  Computed here once so it is available downstream.
+    weekly_trend_up = True   # default: assume aligned until proven otherwise
+    if SCORE_CFG.WEEKLY_TREND_CHECK and len(c) >= 20:
+        try:
+            _df_w = pd.DataFrame({"close": c.values, "high": h.values,
+                                   "low": l.values, "volume": v.values})
+            _df_w.index = pd.RangeIndex(len(_df_w))
+            # Approximate weekly bars by grouping every 5 trading days.
+            # FIX-4: The original stride-5 sample (range(4, len, 5)) silently drops
+            # the last 1-4 bars of any partial week.  On a Thursday after a 3-day
+            # rally the weekly EMA never sees that move, firing a phantom
+            # WEEKLY_TREND_PENALTY on a perfectly valid setup.
+            # Fix: build the stride-5 weekly closes, then append today's close as the
+            # partial-week bar if there are any leftover daily bars after the last
+            # full-week boundary.
+            _stride_indices = list(range(4, len(_df_w), 5))
+            _wc_vals = [float(_df_w["close"].iloc[max(0, i-4):i+1].iloc[-1])
+                        for i in _stride_indices]
+            # Append partial-week close (today) if not already captured
+            _last_full = _stride_indices[-1] if _stride_indices else -1
+            if len(_df_w) - 1 > _last_full:
+                _wc_vals.append(float(_df_w["close"].iloc[-1]))
+            _wc = pd.Series(_wc_vals, dtype=float)
+            if len(_wc) >= 10:
+                _we9  = _wc.ewm(span=9,  adjust=False).mean()
+                _we20 = _wc.ewm(span=20, adjust=False).mean()
+                weekly_trend_up = float(_we9.iloc[-1]) >= float(_we20.iloc[-1])
+        except Exception:
+            weekly_trend_up = True   # fail open
+
     return {
         "c": c, "h": h, "l": l, "v": v,
         "e9": e9, "e20": e20, "e50": e50, "e5": e5,
         "atr": atr, "tr": tr, "atr5": atr5, "atr20": atr20,
         "rsi": rsi, "sma200": sma200, "vol_ma20": vol_ma20,
+        "weekly_trend_up": weekly_trend_up,
     }
 
 
@@ -744,7 +1198,7 @@ def compute_features(ind: dict, ticker: str, ltp: float, day_vol: float,
 
     n = len(c)
     atr_v   = float(atr.iloc[-1]);  atr_v = max(atr_v, 1e-9)
-    rsi_v   = float(rsi.iloc[-1]);  rsi_p = float(rsi.iloc[-2])
+    rsi_v   = float(rsi.iloc[-1]);  rsi_prev = float(rsi.iloc[-2])
     e9_v    = float(e9.iloc[-1]);   e20_v = float(e20.iloc[-1]);  e50_v = float(e50.iloc[-1])
     e9_y    = float(e9.iloc[-2]);   e20_y = float(e20.iloc[-2])
     atr_pct = (atr_v / ltp) * 100 if ltp > 0 else 0.0
@@ -779,7 +1233,9 @@ def compute_features(ind: dict, ticker: str, ltp: float, day_vol: float,
     rs_div_pct = float((np.array(prev_divs) <= rs_div).mean()) if len(prev_divs) >= 10 else 0.5
 
     # ── Sector RS ─────────────────────────────────────────────────
-    sect = STOCK_SECTOR_MAP.get(ticker.upper())
+    # Use get_sector() which checks STOCK_SECTOR_MAP first, then falls
+    # through to _DB_CACHE (full 2500-stock DB) — fixes "?" for mid/small-caps.
+    sect = get_sector(ticker.upper())
     sect_ret  = market_ctx.get("sector_returns",     {}).get(sect)
     sect_r10  = market_ctx.get("sector_returns_10d", {}).get(sect)
     sect_name = sect or "?"
@@ -798,7 +1254,10 @@ def compute_features(ind: dict, ticker: str, ltp: float, day_vol: float,
             accel_z  = (sect_ret - sect_r10) / max(float(pd.Series(all_sv).std()), 1e-4)
             rs_sect  = float(np.clip(rs_sect + cfg.RS_SECT_ACCEL_BONUS * np.tanh(accel_z), 0.0, 1.0))
     else:
-        rs_sect = 0.0
+        # Neutral 0.5 when sector unknown or sector return unavailable.
+        # Hard 0.0 penalises unmapped/mid-small-cap stocks vs large-caps
+        # that happen to have a sector ticker — unfair and score-deflating.
+        rs_sect = 0.5
 
     # ── MA structure (continuous, percentile-rank based) ──────────
     ratio_hist = (e9 / e50.replace(0, np.nan)).dropna()
@@ -843,13 +1302,16 @@ def compute_features(ind: dict, ticker: str, ltp: float, day_vol: float,
     rci_val     = float(rng_ser.iloc[-1]) if pd.notna(rng_ser.iloc[-1]) else 1.0
 
     # ── Volume features ───────────────────────────────────────────
-    vol_mu    = float(v.tail(20).mean()) if len(v) >= 5 else vol_ma20
-    vol_sigma = max(float(v.tail(20).std()) if len(v) > 1 else vol_mu * 0.3, vol_mu * 0.05)
+    # Bug 10 fix: exclude today's bar from historical baseline (v.iloc[:-1])
+    # so intraday partial volume doesn't contaminate the mean/sigma reference.
+    _v_hist   = v.iloc[:-1]
+    vol_mu    = float(_v_hist.tail(20).mean()) if len(_v_hist) >= 5 else vol_ma20
+    vol_sigma = max(float(_v_hist.tail(20).std()) if len(_v_hist) > 1 else vol_mu * 0.3, vol_mu * 0.05)
     vol_z     = (float(v.iloc[-1]) - vol_mu) / (vol_sigma + 1e-9)
     vol_ratio = float(v.iloc[-1]) / (vol_ma20 + 1e-9)
-    # Institutional ratio (5-day avg / 20-day avg)
-    inst_ratio = float(v.tail(5).mean()) / (vol_ma20 + 1e-9)
-    _inst_hist = (v.rolling(5).mean() / (v.rolling(20).mean() + 1e-9)).dropna()
+    # Institutional ratio (5-day avg / 20-day avg) — use historical bars only for baseline
+    inst_ratio = float(_v_hist.tail(5).mean()) / (vol_ma20 + 1e-9)
+    _inst_hist = (_v_hist.rolling(5).mean() / (_v_hist.rolling(20).mean() + 1e-9)).dropna()
     if len(_inst_hist) >= 20:
         ic = float(_inst_hist.tail(60).median())
         is_ = max(float(_inst_hist.tail(60).std()), 0.05)
@@ -858,24 +1320,43 @@ def compute_features(ind: dict, ticker: str, ltp: float, day_vol: float,
     inst_feature = float(1.0 / (1.0 + np.exp(-((inst_ratio - ic) / is_))))
 
     # Volume trend (5-bar slope, normalised)
+    # Exclude today's bar so an intraday volume surge doesn't inflate the slope
+    # and trend percentile that are supposed to measure pre-move accumulation.
     if n >= 8:
-        v5_vals = v.tail(5).values.astype(float)
+        _v_trend = v.iloc[:-1]
+        v5_vals  = _v_trend.tail(5).values.astype(float)
         v5_slope = float(np.polyfit(np.arange(5, dtype=float), v5_vals, 1)[0]) / (vol_mu + 1e-9)
-        v_trend_pct = float((v.rolling(5).mean().dropna() <= float(v5_vals.mean())).mean())
+        v_trend_pct = float((_v_trend.rolling(5).mean().dropna() <= float(v5_vals.mean())).mean())
         vol_signal = float(np.clip(0.5 + v5_slope * 2.0, 0.0, 1.0)) * 0.6 + v_trend_pct * 0.4
+        # Volume spike decay: a true outlier vol spike (above stock's own P90) means the move
+        # is already done — discount so Breakout doesn't reward chasing a news/gap event.
+        # Only applies to the most recent completed bar (T-1), not the 5-bar slope.
+        _t1_vol = float(_v_trend.iloc[-1])
+        _vol_p90 = float(_v_trend.tail(60).quantile(0.90)) if len(_v_trend) >= 20 else vol_mu * 2.5
+        if _t1_vol > _vol_p90:
+            _spike_excess = (_t1_vol - _vol_p90) / max(_vol_p90, 1.0)
+            _spike_decay  = float(np.clip(_spike_excess / 2.0, 0.0, 0.7))
+            vol_signal    = float(np.clip(vol_signal * (1.0 - _spike_decay), 0.0, 1.0))
     else:
         vol_signal = 0.5
 
     # Up-volume skew
+    # FIX-7: Original code used c.diff() and v on the full series including today,
+    # causing today's bar to appear in both the current up_vol/dn_vol measurement
+    # and the uv_hist reference window (self-comparison lookahead).  On a strong
+    # green day this inflated uv_feature, rewarding the move AFTER it started.
+    # Fix: compute everything on historical bars only (iloc[:-1]).
     uv_feature = 0.5
-    if n >= 20:
-        up_mask  = c.diff() > 0;  dn_mask = c.diff() < 0
-        up_vol   = float(v[up_mask].tail(20).sum())
-        dn_vol   = float(v[dn_mask].tail(20).sum())
+    if n >= 21:
+        _c_h = c.iloc[:-1];  _v_h = v.iloc[:-1]
+        up_mask  = _c_h.diff() > 0;  dn_mask = _c_h.diff() < 0
+        up_vol   = float(_v_h[up_mask].tail(20).sum())
+        dn_vol   = float(_v_h[dn_mask].tail(20).sum())
         uv_ratio = up_vol / (dn_vol + 1e-9)
+        _nh = len(_c_h)
         uv_hist  = pd.Series([
-            v[up_mask].iloc[max(0, i - 20):i].sum() / (v[dn_mask].iloc[max(0, i - 20):i].sum() + 1e-9)
-            for i in range(20, min(60, n))
+            _v_h[up_mask].iloc[max(0, i - 20):i].sum() / (_v_h[dn_mask].iloc[max(0, i - 20):i].sum() + 1e-9)
+            for i in range(20, min(60, _nh))
         ], dtype=float)
         uv_feature = float((uv_hist <= uv_ratio).mean()) if len(uv_hist) >= 5 else (0.7 if uv_ratio > 1.0 else 0.4)
 
@@ -884,18 +1365,26 @@ def compute_features(ind: dict, ticker: str, ltp: float, day_vol: float,
     if n >= 10:
         hl_r    = (h - l).replace(0, np.nan)
         cpr_raw = ((c - l) / hl_r).dropna()
-        cpr10   = float(cpr_raw.tail(10).mean())
-        cpr_h   = cpr_raw.rolling(10).mean().dropna()
+        # Bug 14 fix: exclude today from both the current mean and the reference
+        # distribution so today's strong close doesn't inflate its own percentile.
+        cpr_hist = cpr_raw.iloc[:-1]
+        cpr10    = float(cpr_hist.tail(10).mean())
+        cpr_h    = cpr_hist.rolling(10).mean().dropna()
         cpr_feature = float((cpr_h <= cpr10).mean()) if len(cpr_h) >= 10 else round(cpr10, 3)
 
     # Spread compression + rising close
+    # Exclude today's bar from the current-bar (qa) computation — a gap-up open
+    # immediately produces compression + rising close, making a post-move bar
+    # look like a pre-move coil.  The historical reference (sch) also excludes
+    # today so qa is not compared against a window that contains itself.
     sc_feature = 0.5
     if n >= 15:
-        r5d  = float(h.tail(5).max() - l.tail(5).min())
-        r10d = float(h.tail(10).max() - l.tail(10).min())
+        _h_hist = h.iloc[:-1]; _l_hist = l.iloc[:-1]; _c_hist = c.iloc[:-1]
+        r5d  = float(_h_hist.tail(5).max() - _l_hist.tail(5).min())
+        r10d = float(_h_hist.tail(10).max() - _l_hist.tail(10).min())
         comp = 1.0 - (r5d / (r10d + 1e-9))
         try:
-            cslope = float(np.polyfit(range(5), c.tail(5).values, 1)[0]) / (atr_v + 1e-9)
+            cslope = float(np.polyfit(range(5), _c_hist.tail(5).values, 1)[0]) / (atr_v + 1e-9)
         except Exception:
             cslope = 0.0
         qa = max(0.0, comp) * max(0.0, cslope)
@@ -903,14 +1392,20 @@ def compute_features(ind: dict, ticker: str, ltp: float, day_vol: float,
             x_    = np.arange(5, dtype=float)
             sx, sx2 = x_.sum(), (x_ ** 2).sum()
             dn_   = 5 * sx2 - sx ** 2
-            cv    = c.values.astype(float)
+            # FIX-9: Use c.iloc[:-1].values (historical only) so the sliding window
+            # reference distribution does not contain today's bar.  Previously
+            # cv = c.values included today, meaning the last window in sw compared
+            # qa against itself — biasing sc_feature upward on strong compression days.
+            cv    = _c_hist.values.astype(float)
+            hv    = _h_hist.values.astype(float)
+            lv    = _l_hist.values.astype(float)
             sw    = np.lib.stride_tricks.sliding_window_view(cv, 5)
             slop_ = (5 * (sw * x_).sum(axis=1) - sx * sw.sum(axis=1)) / (dn_ + 1e-9)
             av_   = atr.iloc[:-1].values.astype(float)[4:]
             nw    = min(len(slop_), len(av_))
             slop_ = slop_[:nw]; av_ = av_[:nw]
-            ra5  = np.array([h.values[i:i+5].max() - l.values[i:i+5].min()   for i in range(nw)])
-            ra10 = np.array([h.values[max(0,i-4):i+6].max() - l.values[max(0,i-4):i+6].min() + 1e-9 for i in range(nw)])
+            ra5  = np.array([hv[i:i+5].max() - lv[i:i+5].min()             for i in range(nw)])
+            ra10 = np.array([hv[max(0,i-4):i+6].max() - lv[max(0,i-4):i+6].min() + 1e-9 for i in range(nw)])
             ch_  = np.clip(1.0 - ra5 / ra10, 0.0, 1.0)
             sn_  = np.clip(slop_ / (av_ + 1e-9), 0.0, None)
             sch  = pd.Series((ch_ * sn_)[-60:], dtype=float).dropna()
@@ -937,23 +1432,28 @@ def compute_features(ind: dict, ticker: str, ltp: float, day_vol: float,
             atr_exp_feature = float(np.clip(1.0 / bars_since, 0.0, 1.0))
 
     # ── Position in 52-week range ─────────────────────────────────
+    # Exclude today's bar: on a breakout day today's high IS the new 52W high,
+    # making pos52w = 1.0 — the signal is measuring the move, not predicting it.
     n250   = min(cfg.PERCENTILE_WINDOW_LONG, n)
-    hi250  = float(h.tail(n250).max()); lo250 = float(l.tail(n250).min())
+    hi250  = float(h.iloc[:-1].tail(n250).max()); lo250 = float(l.iloc[:-1].tail(n250).min())
     pos52w = (ltp - lo250) / (hi250 - lo250 + 1e-9)
-    pos_ser = (c - c.rolling(n250).min()) / (c.rolling(n250).max() - c.rolling(n250).min() + 1e-9)
+    _c_hist_52 = c.iloc[:-1]
+    pos_ser = (_c_hist_52 - _c_hist_52.rolling(n250).min()) / (_c_hist_52.rolling(n250).max() - _c_hist_52.rolling(n250).min() + 1e-9)
     pos_pct = percentile_last(pos_ser, min(n250, len(pos_ser)))
     if pd.isna(pos_pct):
         pos_pct = pos52w
 
     # ── Stability (% of last-20 closes positive) ──────────────────
+    # Exclude today's bar — a big up day would otherwise boost stability and
+    # simultaneously lift the P20 threshold that judges it in penalties.
     if n >= 21:
-        stability = float((c.iloc[-20:].pct_change().dropna() > 0).mean())
+        stability = float((c.iloc[-21:-1].pct_change().dropna() > 0).mean())
     elif n >= 11:
-        stability = float((c.iloc[-10:].pct_change().dropna() > 0).mean())
+        stability = float((c.iloc[-11:-1].pct_change().dropna() > 0).mean())
     else:
         stability = 0.5
     if n >= 40:
-        stab_ser = c.pct_change().rolling(20).apply(
+        stab_ser = c.iloc[:-1].pct_change().rolling(20).apply(
             lambda x: (x > 0).sum() / max(len(x.dropna()), 1), raw=False
         ).dropna()
         stab_pct = percentile_last(stab_ser, min(60, len(stab_ser)))
@@ -979,22 +1479,40 @@ def compute_features(ind: dict, ticker: str, ltp: float, day_vol: float,
     vcp_cs = cs_state.get("cs_vcp", {}).get(ticker)
 
     # ── ADR / base data ───────────────────────────────────────────
-    base_hi  = float(h.tail(20).max());  base_lo = float(l.tail(20).min())
+    # base_hi uses h.iloc[:-2].tail(20) (excludes yesterday) to match the shift(1) convention
+    # in ext_hist = (c - h.rolling(20).max().shift(1)).  Both now measure extension vs the
+    # 20-day high that was in place *before* the current bar, so ext_p90/p10 are valid
+    # calibration bounds for breakout_ext.
+    base_hi  = float(h.iloc[:-2].tail(20).max());  base_lo = float(l.iloc[:-1].tail(20).min())  # Bug 2 fix: exclude today so pivot is pre-move
     base_rng = base_hi - base_lo + 1e-9
     breakout_ext = (ltp - base_hi) / (atr_v + 1e-9)
 
+    # ── Percentile ranks for VolClimax detection ──────────────────
+    # All three P-ranks are derived from the stock's own rolling history,
+    # so no fixed price/RSI level is baked in.
+    if n >= 40:
+        _vr_hist_all = (v.iloc[:-1] / (v.iloc[:-1].rolling(20).mean() + 1e-9)).dropna()
+        vol_prank    = float((_vr_hist_all < vol_ratio).mean()) if len(_vr_hist_all) >= 20 else 0.5
+        _rsi_hist    = _rsi_wilder(c, 7).iloc[:-1].dropna()
+        rsi_prank    = float((_rsi_hist < rsi_v).mean())        if len(_rsi_hist)    >= 14 else 0.5
+        _ext_hist    = ((c.iloc[:-1] - h.iloc[:-1].rolling(20).max().shift(1)) /
+                        (atr.iloc[:-2] + 1e-9)).dropna()
+        ext_prank    = float((_ext_hist < breakout_ext).mean()) if len(_ext_hist)    >= 20 else 0.5
+    else:
+        vol_prank = rsi_prank = ext_prank = 0.5
+
     # ── OI buildup (F&O stocks) ───────────────────────────────────
-    oi_feature = 0.0
+    _oi_feature = 0.0  # placeholder: df not available here
     # NOTE: df not available here; must be passed or handled in aggregate
 
     return dict(
         # Meta
         regime=regime, ltp=ltp, atr_v=atr_v, atr_pct=atr_pct,
         e9_v=e9_v, e20_v=e20_v, e50_v=e50_v,
-        rsi_v=rsi_v, rsi_p=rsi_p,
+        rsi_v=rsi_v, rsi_prev=rsi_prev,
         # RS
         rs_combined=rs_combined, acc_sc=acc_sc, rs_div_pct=rs_div_pct,
-        rs_sect=rs_sect, sect_name=sect_name,
+        abs_rs=abs_rs, rs_sect=rs_sect, sect_name=sect_name,
         # MA
         ma_feature=ma_feature, acc_rank=acc_rank,
         # Volatility
@@ -1014,6 +1532,8 @@ def compute_features(ind: dict, ticker: str, ltp: float, day_vol: float,
         breakout_ext=breakout_ext,
         # Cross-sectional
         bb_cs=bb_cs, vdu_cs=vdu_cs, clv_cs=clv_cs, vcp_cs=vcp_cs,
+        # VolClimax percentile ranks (all derived from stock's own history)
+        vol_prank=vol_prank, rsi_prank=rsi_prank, ext_prank=ext_prank,
     )
 
 
@@ -1028,15 +1548,15 @@ def compute_signals(feat: dict, ind: dict, df: pd.DataFrame,
     """Stage 3 — per-setup continuous signals (0-1 each)."""
     cfg  = SCORE_CFG
     c, h, l, v = ind["c"], ind["h"], ind["l"], ind["v"]
-    atr, tr    = ind["atr"], ind["tr"]
+    atr = ind["atr"]
     atr5, atr20 = ind["atr5"], ind["atr20"]
-    e9, e20, e50 = ind["e9"], ind["e20"], ind["e50"]
+    e9, e20, _e50 = ind["e9"], ind["e20"], ind["e50"]
     rsi        = ind["rsi"]
 
     atr_v   = feat["atr_v"]
     e9_v    = feat["e9_v"];   e20_v = feat["e20_v"];   e50_v = feat["e50_v"]
-    rsi_v   = feat["rsi_v"];  rsi_p = feat["rsi_p"]
-    vol_mu  = feat["vol_mu"]; vol_z = feat["vol_z"]
+    rsi_v   = feat["rsi_v"];  _rsi_p = feat["rsi_prev"]
+    _vol_mu = feat["vol_mu"]; vol_z = feat["vol_z"]
     base_hi = feat["base_hi"]; base_lo = feat["base_lo"]; base_rng = feat["base_rng"]
     breakout_ext = feat["breakout_ext"]
 
@@ -1045,7 +1565,7 @@ def compute_signals(feat: dict, ind: dict, df: pd.DataFrame,
     # ── Determine setup type ──────────────────────────────────────
     # Volume threshold: P85 of HISTORICAL daily volume (exclude today)
     # so intraday partial volume is on the same basis as a full daily bar.
-    vol_bo_thresh = float(v.iloc[:-1].tail(60).quantile(0.85)) \
+    vol_bo_thresh = float(v.iloc[:-1].tail(cfg.PERCENTILE_WINDOW_PERSHORT).quantile(cfg.BO_VOL_PERCENTILE)) \
                     if n >= 10 else float(v.mean())
 
     # Extension history on historical bars only (exclude today).
@@ -1067,7 +1587,7 @@ def compute_signals(feat: dict, ind: dict, df: pd.DataFrame,
     # its own historical vol ratio, not a fixed 1.3× absolute multiple.
     _rev_vol_p = float((v.iloc[:-1] / (v.iloc[:-1].rolling(20).mean() + 1e-9))
                        .dropna().quantile(cfg.REVERSAL_VOL_PRANK))                  if n >= 20 else 1.3
-    is_reversal = (rsi_v < float(rsi.tail(60).quantile(0.35)) and
+    is_reversal = (rsi_v < float(rsi.iloc[:-1].tail(cfg.PERCENTILE_WINDOW_PERSHORT).quantile(0.35)) and  # Bug 8 fix: exclude today from ref distribution
                    t1_vol_ratio >= _rev_vol_p and washout_depth >= 1.5)
 
     # ── Pullback geometry ────────────────────────────────────────
@@ -1104,51 +1624,75 @@ def compute_signals(feat: dict, ind: dict, df: pd.DataFrame,
         _pb_min = 0.3
     real_pb = _pb_depth >= _pb_min
 
-    # Volume drying up = today's scaled volume below 20-day historical median
-    vol_dryup   = day_vol < float(v.iloc[:-1].tail(20).median() + 1e-9) if n >= 20 else True
-    vol_confirm = day_vol >= vol_bo_thresh
+    # Bug 3 fix: scale day_vol by session fraction so an early-session partial bar
+    # isn't falsely flagged as volume dry-up purely due to time-of-day.
+    # day_vol_sc is the session-pace-adjusted equivalent of a full-day volume.
+    _vol_sess_frac = max(elapsed_frac, 1e-3)   # avoid div/0 at open
+    day_vol_sc  = day_vol / _vol_sess_frac      # project to full-session pace
+    vol_dryup   = day_vol_sc < float(v.iloc[:-1].tail(20).median() + 1e-9) if n >= 20 else True
 
     # ── Breakout geometry ────────────────────────────────────────
     # Price is at or just above the pivot (20-day high), in ATR terms.
-    at_pivot = breakout_ext >= -0.5 and breakout_ext <= ext_p90
+    # Lower bound uses ext_p10 (data-driven) instead of a magic -0.5.
+    at_pivot = breakout_ext >= ext_p10 and breakout_ext <= ext_p90
 
-    # ── Classification — ordered most-specific first ──────────────
+    # ── Session guard: suppress vol_confirm before VOL_CONFIRM_MIN_FRAC ──
+    # Even pace-adjusted volume in the first ~30% of the session is too noisy
+    # to confirm a Breakout.  Below this threshold vol_confirm is forced False
+    # and the Breakout label is suppressed; the stock is labelled "Developing BO"
+    # via the horizon note instead.
+    _vol_confirm_allowed = elapsed_frac >= cfg.VOL_CONFIRM_MIN_FRAC
+    vol_confirm = (day_vol_sc >= vol_bo_thresh) and _vol_confirm_allowed  # Bug 19 fix: use pace-adjusted vol
+
+    # ── Intraday market circuit breaker ──────────────────────────────────
+    # When Nifty is down >= 2% on the day, issuing Breakout labels is
+    # dangerous.  Force all Breakout candidates to Pullback.
+    _nifty_intraday_chg = float(cs_state.get("nifty_intraday_chg") or 0.0)
+    _market_kill = _nifty_intraday_chg <= cfg.NIFTY_INTRADAY_KILL
     # Priority:
     #   1. Reversal  — oversold panic with volume spike
-    #   2. Pullback  — retreated from high, resting at EMA, volume quiet
-    #   3. Breakout  — at pivot WITH volume confirmation
-    #   4. Pullback  — extended without volume (post-breakout fade)
-    #   5. Pullback  — everything else (base building, no clear signal)
+    #   2. PB-EMA    — retreated to EMA20/EMA9, volume quiet, above EMA50
+    #   3. Breakout  — at pivot WITH volume confirmation AND session/market ok
+    #   4. Coiling   — strong compression signals but vol not confirmed yet (pre-move)
+    #   5. PB-Dry    — real pullback, vol drying, not yet at EMA (deeper but healthy)
+    #   6. PB-Deep   — real pullback above EMA50 but not near an EMA (still correcting)
+    #   7. Base      — no real pullback signal, stock range-bound / base-building
     if is_reversal:
         setup_type = "Reversal"
 
     elif real_pb and (near_ema20_band or near_ema9_band) and above_e50:
-        # Textbook pullback: retreated, at EMA, above trend line
-        setup_type = "Pullback"
+        # Textbook pullback: retreated, price is AT the EMA support band, trend intact
+        setup_type = "PB-EMA"
 
-    elif real_pb and above_e50 and vol_dryup:
-        # Deeper pullback, volume drying up — still a pullback not a breakout
-        setup_type = "Pullback"
-
-    elif at_pivot and vol_confirm:
+    elif at_pivot and vol_confirm and not _market_kill:
         # At the base pivot with volume confirmation — genuine breakout
         setup_type = "Breakout"
 
-    elif breakout_ext > ext_p90 and vol_confirm:
+    elif breakout_ext > ext_p90 and vol_confirm and not _market_kill:
         # Extended but continuation volume — treat as breakout continuation
         setup_type = "Breakout"
 
+    elif at_pivot and not vol_confirm:
+        # At pivot but vol not confirmed yet — highest-value pre-move state.
+        # Classify as Coiling so users can filter for it separately.
+        # Will upgrade to Breakout the moment volume confirms.
+        setup_type = "Coiling"
+
+    elif real_pb and above_e50 and vol_dryup:
+        # Real pullback, volume drying up, NOT yet at EMA — deeper coiling pullback
+        setup_type = "PB-Dry"
+
     elif breakout_ext > ext_p90 and not vol_confirm:
-        # Extended without volume — post-breakout consolidation
-        setup_type = "Pullback"
+        # Extended without volume — post-breakout consolidation, treat as deep pullback
+        setup_type = "PB-Deep"
 
     elif real_pb and above_e50:
-        # Still declining but above EMA50 — developing pullback
-        setup_type = "Pullback"
+        # Still declining but above EMA50 — developing correction
+        setup_type = "PB-Deep"
 
     else:
         # Default: base building, no strong directional signal
-        setup_type = "Pullback"
+        setup_type = "Base"
 
     # ── Coil score (adaptive: Breakout vs Pullback) ───────────────
     _sw = 20
@@ -1168,7 +1712,7 @@ def compute_signals(feat: dict, ind: dict, df: pd.DataFrame,
         hsp   = (rhi.max() - rhi.min()) / (atr_v + 1e-9)
         # Normalise high-spread by the stock's own ATR — 1 ATR of spread
         # across 8 bars is a natural reference point, not an arbitrary 1.0.
-        flat  = max(0.0, 1.0 - min(hsp / max(1.0, atr_v / (float(h.tail(20).mean()) + 1e-9) * 100), 1.0))
+        flat  = max(0.0, 1.0 - min(hsp, 1.0))   # hsp already in ATR units; 1 ATR spread = 0 flatness
         th    = (1.0 - (h.rolling(5).max() - l.rolling(5).min()).tail(60) / (base_rng + 1e-9)).dropna()
         fh    = pd.Series([
             max(0.0, 1.0 - (h.iloc[max(0,i-7):i].max() - h.iloc[max(0,i-7):i].min()) / (atr_v + 1e-9))
@@ -1221,7 +1765,9 @@ def compute_signals(feat: dict, ind: dict, df: pd.DataFrame,
     else:
         prox_lam = 1.0
 
-    if setup_type == "Breakout":
+    if setup_type in ("Breakout", "Coiling"):
+        # Both Breakout and Coiling are at or near the pivot — use pivot-distance proximity.
+        # Coiling = vol not confirmed yet but price is at base_hi; same ideal_d logic applies.
         d_trig = (base_hi - ltp) / (atr_v + 1e-9)
         r_ser  = h.rolling(20).max().shift(1)
         n_bo   = min(n, len(r_ser.dropna()), len(atr) - 1)
@@ -1240,9 +1786,26 @@ def compute_signals(feat: dict, ind: dict, df: pd.DataFrame,
         else:
             d_ = dist_[(dist_ > 0) & ~np.isnan(dist_)]
             ideal_d = float(np.median(d_)) if len(d_) >= 5 else 1.0 / prox_lam
-        d_adj   = abs(d_trig - ideal_d)
-        if d_trig < 0:
-            d_adj += abs(d_trig)
+        # d_trig > 0 : price is BELOW base_hi (approaching trigger) -- good
+        # d_trig = 0 : price is exactly AT base_hi -- ideal
+        # d_trig < 0 : price is ABOVE base_hi (already extended) -- penalise
+        #
+        # Bug fix: the old code used abs(d_trig - ideal_d) then added abs(d_trig)
+        # when d_trig < 0 -- but ideal_d is always positive (distance BEFORE trigger),
+        # so when d_trig is negative the abs() already under-penalises extension.
+        # Additionally the extra abs(d_trig) term was added AFTER the ideal_d
+        # subtraction, meaning a stock 0.5 ATR above base scored the same as one
+        # 0.5 ATR below -- both gave d_adj = ideal_d + 0.5.  Extension should
+        # always score worse than the equivalent distance below the trigger.
+        # Fix: when d_trig < 0 (extended), use a steeper penalty multiplier so
+        # the proximity score decays faster above base than below it.
+        if d_trig >= 0:
+            # Approaching trigger: penalise deviation from ideal approach distance
+            d_adj = abs(d_trig - ideal_d)
+        else:
+            # Already above trigger: distance above base + full ideal_d gap
+            # Use 2x multiplier so extension decays score faster than approach
+            d_adj = (ideal_d + abs(d_trig)) * cfg.PROX_BO_OVERSHOOT_MULT
         prox_sc = max(0.0, min(1.0, float(np.exp(-prox_lam * d_adj))))
     else:
         de9  = ltp - e9_v;  de20 = ltp - e20_v
@@ -1285,19 +1848,28 @@ def compute_signals(feat: dict, ind: dict, df: pd.DataFrame,
             d_ar = 1.0
         d_tight = 1.0 / (1.0 + d_ar)
         d_time  = float(np.clip(darvas_r.get("bars_in_box", 0) / (cfg.DARVAS_IDEAL_BARS * 2.0), 0.0, 1.0))
-        darvas_sc = d_tight * 0.40 + dp_sc * 0.35 + d_time * 0.25
+        darvas_sc = d_tight * cfg.DARVAS_W_TIGHT + dp_sc * cfg.DARVAS_W_POS + d_time * cfg.DARVAS_W_TIME
     else:
-        darvas_sc = darvas_r["darvas_score"] / 10.0
+        # Fallback: no valid box_high — use raw darvas_score but still apply
+        # setup-type inversion to position_in_box so Pullback isn't scored
+        # as if it were a Breakout.
+        raw_ds   = darvas_r["darvas_score"] / 10.0
+        dp_raw   = darvas_r.get("position_in_box", 0.5)
+        dp_sc_fb = float(np.clip(dp_raw if setup_type == "Breakout"
+                                  else 1.0 - dp_raw, 0.0, 1.0))
+        darvas_sc = raw_ds * cfg.DARVAS_FB_W_RAW + dp_sc_fb * cfg.DARVAS_FB_W_POS
 
     # ── Sweep bonus (false-break reversal) ───────────────────────
     sweep_sc = 0.0
     if n >= 5:
-        prior_sup   = float(l.tail(5).min())
+        prior_sup   = float(l.iloc[:-1].tail(5).min())  # exclude today so day_lo < prior_sup can fire
         lower_wick  = min(day_o, ltp) - day_lo
-        vz_hist     = ((v - v.rolling(20).mean()) / (v.rolling(20).std() + 1e-9)).tail(60)
+        # Bug 12 fix: build vol-z reference from historical bars only
+        _v_h        = v.iloc[:-1]
+        vz_hist     = ((_v_h - _v_h.rolling(20).mean()) / (_v_h.rolling(20).std() + 1e-9)).tail(60)
         vz_p60      = float(vz_hist.quantile(0.60)) if len(vz_hist) >= 20 else 1.0
-        if (day_lo < prior_sup and ltp > float(c.iloc[-1]) and
-                lower_wick >= 0.5 * atr_v and vol_z >= vz_p60):
+        if (day_lo < prior_sup and ltp > day_o and
+                lower_wick >= cfg.SWEEP_WICK_MIN_ATR * atr_v and vol_z >= vz_p60):
             wick_r   = lower_wick / (atr_v + 1e-9)
             sweep_sc = float(np.clip(np.tanh(wick_r), 0.0, 1.0))
 
@@ -1340,17 +1912,22 @@ def compute_signals(feat: dict, ind: dict, df: pd.DataFrame,
         vol_velocity = float(np.clip(np.tanh(vr - 1.0), 0.0, 1.0))
 
     # ── ATR potential (inverted) ──────────────────────────────────
-    atr_hist_pct = (_atr(df, 14).iloc[:-1] / c.iloc[:-1] * 100).tail(60).dropna()
+    atr_hist_pct = (_atr(df, cfg.ATR_PERIOD).iloc[:-1] / c.iloc[:-1] * 100).tail(cfg.PERCENTILE_WINDOW_PERSHORT).dropna()
     atr_pct_rank = float((atr_hist_pct <= feat["atr_pct"]).mean()) if len(atr_hist_pct) >= 10 else 0.5
     atp_sc       = 1.0 - atr_pct_rank
 
     # ── Candle patterns ───────────────────────────────────────────
+    # Patterns are detected on the live bar but only contribute to score
+    # once the bar is essentially closed (>= CANDLE_CONFIRM_FRAC of session).
+    # Before that threshold they are reported in Patterns but cdl_sc = 0 so
+    # they don't inflate the score on an incomplete candle.
     raw_cdl, cdl_names = detect_candle_patterns(
         day_o, day_hi, day_lo, ltp,
         float(df["open"].iloc[-2]), float(df["high"].iloc[-2]),
         float(df["low"].iloc[-2]),  float(df["close"].iloc[-2]),
     )
-    cdl_sc = min(raw_cdl * 0.1, 0.5)   # normalise to 0-0.5
+    _bar_confirmed = elapsed_frac >= cfg.CANDLE_CONFIRM_FRAC
+    cdl_sc = min(raw_cdl * 0.1, 0.5) if _bar_confirmed else 0.0   # normalise to 0-0.5
 
     # ── Stability adaptive adjustment ─────────────────────────────
     stab_adj = 0.0
@@ -1389,6 +1966,9 @@ def compute_signals(feat: dict, ind: dict, df: pd.DataFrame,
         oi_sc=oi_sc, vol_velocity=vol_velocity, atp_sc=atp_sc,
         cdl_sc=cdl_sc, stab_adj=stab_adj, vcve_sc=vcve_sc,
         vol_quiet_pct=vol_quiet_pct,
+        # Confirmation flags (used in aggregate_score / penalties)
+        vol_confirm=vol_confirm, bar_confirmed=_bar_confirmed,
+        market_kill=_market_kill, vol_confirm_allowed=_vol_confirm_allowed,
         # VCP detail
         vcp_detail=vcp_r,
         # Darvas detail
@@ -1410,12 +1990,12 @@ def compute_penalties(feat: dict, sig: dict, market_ctx: dict,
                        adv_threshold: float) -> dict:
     """Stage 4 — continuous penalties mapped to score-point deductions."""
     cfg = SCORE_CFG
-    c, h, l, v = ind["c"], ind["h"], ind["l"], ind["v"]
+    c, h, _l, v = ind["c"], ind["h"], ind["l"], ind["v"]
     atr = ind["atr"]
     atr_v    = feat["atr_v"];   atr_pct  = feat["atr_pct"]
     rsi_v    = feat["rsi_v"];   vol_mu   = feat["vol_mu"]
     sma200   = ind["sma200"]
-    vol_ma20 = ind["vol_ma20"]
+    _vol_ma20 = ind["vol_ma20"]
     n        = len(c)
     regime   = feat["regime"]
 
@@ -1423,20 +2003,26 @@ def compute_penalties(feat: dict, sig: dict, market_ctx: dict,
 
     # ── RSI overbought (adaptive P90) ────────────────────────────
     rsi_all = _rsi_wilder(c, rsi_period)
-    rsi_p90 = float(rsi_all.tail(60).quantile(0.90)) if len(rsi_all) >= 20 else 80.0
+    # Bug 5 fix: exclude today's RSI from the reference window so an extreme
+    # current reading doesn't shift the threshold that judges it.
+    rsi_p90 = float(rsi_all.iloc[:-1].tail(cfg.PERCENTILE_WINDOW_PERSHORT).quantile(0.90)) if len(rsi_all) >= cfg.MIN_BARS_RSI else cfg.RSI_OB_FALLBACK
     if rsi_v > rsi_p90:
-        z = (rsi_v - rsi_p90) / max(float(rsi_all.tail(20).std()), 1.0)
+        z = (rsi_v - rsi_p90) / max(float(rsi_all.iloc[:-1].tail(20).std()), 1.0)
         penalties["rsi_ob"] = float(np.clip(8.0 * np.tanh(z), 0.0, cfg.RSI_OB_CAP))
 
     # ── Abnormally low volume ─────────────────────────────────────
-    vol_p05 = float(v.tail(60).quantile(0.05)) if len(v) >= 20 else vol_mu * 0.10
-    prev_v  = float(v.iloc[-1])
+    # Bug 11 fix: exclude today's bar from the reference quantile so a partial
+    # intraday volume doesn't falsely look like an "abnormally low" historical bar.
+    vol_p05 = float(v.iloc[:-1].tail(60).quantile(0.05)) if len(v) >= 20 else vol_mu * 0.10
+    prev_v  = float(v.iloc[-2]) if len(v) >= 2 else float(v.iloc[-1])  # Bug 2 fix: use yesterday, not today
     if prev_v < vol_p05:
         vz = (vol_p05 - prev_v) / max(float(v.tail(20).std()), 1.0)
         penalties["vol_low"] = float(np.clip(6.0 * np.tanh(vz), 0.0, cfg.VOL_LOW_CAP))
 
     # ── Very low ATR (dead stock) ─────────────────────────────────
-    atr_hist = (atr / c).tail(60).dropna()
+    # Exclude today: a breakout widens ATR, shifting the P10 threshold upward
+    # and softening the very penalty that should flag low-volatility stocks.
+    atr_hist = (atr.iloc[:-1] / c.iloc[:-1]).tail(60).dropna()
     if len(atr_hist) >= 10:
         atr_p10 = float(atr_hist.quantile(0.10))
         if atr_pct / 100.0 < atr_p10:
@@ -1447,11 +2033,12 @@ def compute_penalties(feat: dict, sig: dict, market_ctx: dict,
     # Threshold: P20 of historical (close - SMA200) / ATR distribution
     # so stocks that habitually trade near their SMA200 aren't penalised
     # more than stocks that regularly pull far below it.
+    # Exclude today's close: it would shift the P20 threshold that judges it.
     sma200_gap_atr = (ltp - sma200) / (atr_v + 1e-9)
     if n >= 40:
         _sma_n    = min(cfg.SMA_TREND, n)
-        _sma_hist = c.rolling(_sma_n).mean()
-        _gap_hist = ((c - _sma_hist) / (atr + 1e-9)).dropna()
+        _sma_hist = c.iloc[:-1].rolling(_sma_n).mean()
+        _gap_hist = ((c.iloc[:-1] - _sma_hist) / (atr.iloc[:-1] + 1e-9)).dropna()
         _gap_p20  = float(_gap_hist.quantile(0.20)) if len(_gap_hist) >= 20 else -0.5
     else:
         _gap_p20 = -0.5
@@ -1468,21 +2055,41 @@ def compute_penalties(feat: dict, sig: dict, market_ctx: dict,
     prev_c = float(c.iloc[-1]); prev_o = float(df["open"].iloc[-1]) if "open" in df.columns else prev_c
     if prev_c > 0 and atr_v > 0 and len(c) >= 2:
         gap = prev_o - float(c.iloc[-2])
-        g_hist = ((h.shift(1) - c.shift(1)).abs() / (atr + 1e-9)).dropna().tail(60)
+        # FIX-2: g_hist was using (h.shift(1) - c.shift(1)).abs() which measures
+        # the upper shadow of each bar, not the overnight gap distribution.
+        # Correct reference: (open_t - close_{t-1}) for each historical bar,
+        # excluding today so the current gap is not in its own reference window.
+        if "open" in df.columns:
+            _o_hist = df["open"].iloc[:-1]          # historical opens, exclude today
+            _c_lag  = c.shift(1).iloc[:-1]           # prior-day closes aligned to _o_hist
+            g_hist  = ((_o_hist - _c_lag).abs() / (atr.iloc[:-1] + 1e-9)).dropna().tail(60)
+        else:
+            # No open column: fall back to close-to-close move as proxy
+            g_hist  = (c.diff().abs() / (atr + 1e-9)).iloc[:-1].dropna().tail(60)
         g_p90  = float(g_hist.quantile(0.90)) if len(g_hist) >= 20 else 2.0
         g_atr  = abs(gap) / (atr_v + 1e-9)
         if g_atr > g_p90:
             penalties["gap"] = float(np.clip(8.0 * np.tanh((g_atr - g_p90) / (g_p90 + 1e-9)),
                                               0.0, cfg.GAP_CAP))
 
-    # ── Already broken out (vol rank ≥ P85 at P90+ extension) ────
+    # ── Already broken out (extended AND high vol — move already done) ───
+    # Only penalise when price is ABOVE the base high by more than 0.5 ATR
+    # AND volume is extreme. Being AT the pivot with vol = genuine breakout to buy.
     setup = sig["setup_type"]
-    if setup == "Breakout" and ltp >= feat["base_hi"] - 0.2 * atr_v:
+
+    # Below-SMA200 hard gate for Breakout / Coiling setups.
+    # Pullback and Reversal setups below SMA200 are legitimate mean-reversion
+    # plays so they are intentionally excluded from this gate.
+    _sma200_v = float(ind["sma200"])
+    if setup in ("Breakout", "Coiling") and ltp < _sma200_v:
+        _below_atr = (_sma200_v - ltp) / (atr_v + 1e-9)
+        penalties["below_sma200_bo"] = float(np.clip(5.0 + 5.0 * np.tanh(_below_atr / 2.0), 0.0, cfg.SMA_CAP))
+    if setup == "Breakout" and ltp >= feat["base_hi"] + 0.5 * atr_v:
         t1v     = float(v.iloc[-1])
         vrank   = float((v.iloc[:-1] <= t1v).mean())
-        if vrank >= 0.85:
-            z = (vrank - 0.85) / 0.15
-            penalties["already_bo"] = float(np.clip(12.0 * np.tanh(z * 2.0), 0.0, cfg.ALREADY_BO_CAP))
+        if vrank >= 0.90:   # raised from 0.85 — only ultra-high vol triggers penalty
+            z = (vrank - 0.90) / 0.10
+            penalties["already_bo"] = float(np.clip(6.0 * np.tanh(z * 2.0), 0.0, cfg.ALREADY_BO_CAP))
 
     # ── Overextended breakout (above ext_p90) ─────────────────────
     if setup == "Breakout" and sig["breakout_ext"] > sig["ext_p90"]:
@@ -1492,19 +2099,22 @@ def compute_penalties(feat: dict, sig: dict, market_ctx: dict,
     # ── Stability kill (very choppy) ──────────────────────────────
     # Threshold derived from the stock's own stability distribution:
     # P20 of rolling 20-day positive-close fraction over last 60 bars.
+    # Exclude today's return so a big green day doesn't raise the P20 threshold
+    # that decides whether today is "too choppy".
     stab = feat["stability"]
     if n >= 40:
-        _stab_ser = c.pct_change().rolling(20).apply(
+        _stab_ser = c.iloc[:-1].pct_change().rolling(20).apply(
             lambda x: (x > 0).sum() / max(len(x.dropna()), 1), raw=False
         ).dropna()
         _stab_p20 = float(_stab_ser.quantile(0.20)) if len(_stab_ser) >= 10 else 0.35
-        _stab_p50 = float(_stab_ser.quantile(0.50)) if len(_stab_ser) >= 10 else 0.50
     else:
-        _stab_p20, _stab_p50 = 0.35, 0.50
+        _stab_p20 = 0.35
     # RSI threshold: stock's own P35 (the same bar used for reversal detection)
+    # Bug 6 fix: exclude today's RSI so an extreme current reading doesn't
+    # raise/lower the threshold that judges it.
     _rsi_all_pen = _rsi_wilder(c, rsi_period)
-    _rsi_p35     = float(_rsi_all_pen.tail(60).quantile(0.35)) if len(_rsi_all_pen) >= 20 else 42.0
-    if stab < _stab_p20 and (feat["rsi_v"] < _rsi_p35 or feat["rsi_v"] <= feat["rsi_p"]):
+    _rsi_p35     = float(_rsi_all_pen.iloc[:-1].tail(cfg.PERCENTILE_WINDOW_PERSHORT).quantile(0.35)) if len(_rsi_all_pen) >= cfg.MIN_BARS_RSI else cfg.RSI_OS_FALLBACK
+    if stab < _stab_p20 and (feat["rsi_v"] < _rsi_p35 or feat["rsi_v"] <= feat["rsi_prev"]):
         _excess = (_stab_p20 - stab) / max(_stab_p20, 1e-9)
         penalties["stability"] = float(np.clip(15.0 * _excess, 0.0, cfg.STAB_CAP))
 
@@ -1516,11 +2126,19 @@ def compute_penalties(feat: dict, sig: dict, market_ctx: dict,
     if vix_v is not None and vix_med is not None and vix_sig is not None:
         # Only compute z-score when we have real distribution parameters from live data.
         vix_z   = (vix_v - vix_med) / (max(vix_sig, 0.5) + 1e-9)
-        vix_adj = float(np.clip(-6.0 * np.tanh(vix_z), cfg.VIX_PENALTY_FLOOR, cfg.VIX_BONUS_CAP))
+        # vix_adj: positive = penalty (high VIX), negative = bonus (low VIX).
+        # Stored directly so total -= vix_adj is consistent with all other keys.
+        vix_adj = float(np.clip(cfg.VIX_TANH_SCALE * np.tanh(vix_z), -cfg.VIX_BONUS_CAP, -cfg.VIX_PENALTY_FLOOR))
         if not vix_fall:
-            vix_adj = float(np.clip(vix_adj - cfg.VIX_FALL_EXTRA * abs(np.tanh(vix_z)),
-                                     cfg.VIX_PENALTY_FLOOR, 0.0))
-        penalties["vix"] = -vix_adj   # stored as positive penalty value
+            # FIX-1: When VIX is rising, add an incremental penalty on top of the
+            # z-score-based adjustment — but do NOT collapse a bonus to zero first.
+            # The old code used np.clip(..., 0.0, ...) which simultaneously wiped
+            # any low-VIX bonus AND added the extra penalty (double-hit of up to
+            # VIX_BONUS_CAP + VIX_PENALTY_FLOOR pts).  Correct approach: add the
+            # extra penalty independently and re-clamp within the full valid range.
+            extra   = cfg.VIX_FALL_EXTRA * abs(float(np.tanh(vix_z)))
+            vix_adj = float(np.clip(vix_adj + extra, -cfg.VIX_BONUS_CAP, -cfg.VIX_PENALTY_FLOOR))
+        penalties["vix"] = vix_adj   # positive = penalty, negative = bonus; applied via total -= p_val
     elif vix_v is not None and not vix_fall:
         # Have VIX level but no history — only penalise if it's clearly rising
         penalties["vix"] = 3.0
@@ -1545,17 +2163,17 @@ def compute_penalties(feat: dict, sig: dict, market_ctx: dict,
         ba  = float(np.clip((n5 + n20 * 0.5) * 100, cfg.BREADTH_PENALTY_FLOOR, cfg.BREADTH_BONUS_CAP))
         penalties["breadth"] = -ba
     elif not market_ctx.get("nifty_above_20dma", True):
-        penalties["breadth"] = 8.0
+        penalties["breadth"] = cfg.BREADTH_FALLBACK_PENALTY
 
-    # ── Regime penalty for Breakouts ──────────────────────────────
-    if setup == "Breakout":
+    # ── Regime penalty for Breakouts and Coiling setups ──────────
+    if setup in ("Breakout", "Coiling"):
         bb_cs  = feat["bb_cs"] if feat["bb_cs"] is not None else 0.5
         vdu_cs = feat["vdu_cs"] if feat["vdu_cs"] is not None else 0.5
         nf     = (bb_cs + vdu_cs) / 2.0
         if regime == "BEAR":
-            penalties["regime_bo"] = nf * cfg.REGIME_BEAR_FACTOR
+            penalties["regime_bo"] = (1.0 - nf) * cfg.REGIME_BEAR_FACTOR
         elif regime == "CHOP":
-            penalties["regime_bo"] = nf * cfg.REGIME_CHOP_FACTOR
+            penalties["regime_bo"] = (1.0 - nf) * cfg.REGIME_CHOP_FACTOR
 
     # ── Sector in distribution (bottom quartile 5D return) ──────────
     # A breakout in a sector that is actively being distributed is
@@ -1577,7 +2195,7 @@ def compute_penalties(feat: dict, sig: dict, market_ctx: dict,
     # When >50% of the universe is already tagged Breakout, a new one
     # is less differentiated — the market is in a broad momentum phase
     # rather than stock-specific coiling.  Discount accordingly.
-    if setup == "Breakout":
+    if setup in ("Breakout", "Coiling"):
         bo_frac = STATE.get("_bo_saturation_frac", 0.0)
         if bo_frac > cfg.BO_SATURATION_FLOOR:
             excess = (bo_frac - cfg.BO_SATURATION_FLOOR) / (
@@ -1586,12 +2204,33 @@ def compute_penalties(feat: dict, sig: dict, market_ctx: dict,
             penalties["bo_saturation"] = float(np.clip(
                 cfg.BO_SATURATION_DISCOUNT * 100.0 * excess,
                 0.0,
-                cfg.BO_SATURATION_DISCOUNT * 100.0
+                cfg.GAP_CAP   # cap at 15 pts — same as gap/RSI caps; 30-pt cap was too large
             ))
 
+    # ── Weekly trend alignment penalty ───────────────────────────────
+    # A Breakout or Coiling setup against the weekly trend is lower probability.
+    if setup in ("Breakout", "Coiling") and cfg.WEEKLY_TREND_CHECK:
+        _wtu = ind.get("weekly_trend_up", True)
+        if not _wtu:
+            penalties["weekly_countertrend"] = cfg.WEEKLY_TREND_PENALTY
+
+    # ── Intraday market circuit breaker note ─────────────────────────
+    # If the circuit breaker fired (Nifty down ≥2%) any stock that would have
+    # been Breakout is already reclassified to Pullback in compute_signals.
+    # We add a small residual penalty here for stocks near the pivot so they
+    # don't surface near the top of the screener on a bad market day.
+    _nifty_chg = float(market_ctx.get("nifty_intraday_chg") or 0.0)
+    if _nifty_chg <= cfg.NIFTY_INTRADAY_KILL:
+        penalties["market_circuit_breaker"] = cfg.MARKET_CB_PENALTY
+
     return {"penalties": penalties,
-            "total_penalty": sum(max(0.0, p) if k != "vix" and k != "breadth"
-                                 else p for k, p in penalties.items())}
+            "total_penalty": sum(
+                # vix and breadth store signed contributions: positive=penalty, negative=bonus.
+                # All other keys: stored as positive penalty magnitudes (no bonus possible).
+                # For total_penalty display, count only the penalty portion of each key.
+                max(0.0, p)
+                for k, p in penalties.items()
+            )}
 
 
 def aggregate_score(feat: dict, sig: dict, pen: dict,
@@ -1607,7 +2246,7 @@ def aggregate_score(feat: dict, sig: dict, pen: dict,
     classify horizon, compute entry / target / stop."""
     cfg = SCORE_CFG
     setup  = sig["setup_type"]
-    regime = feat["regime"]
+    _regime = feat["regime"]
 
     # ────────────────────────────────────────────────────────────
     # Signal strength × coverage  (prevents sparse-signal stocks)
@@ -1615,22 +2254,29 @@ def aggregate_score(feat: dict, sig: dict, pen: dict,
     c, h, l, v = ind["c"], ind["h"], ind["l"], ind["v"]
     atr = ind["atr"]
     atr_v  = feat["atr_v"];   atr_pct = feat["atr_pct"]
-    e9_v   = feat["e9_v"];    e20_v   = feat["e20_v"];   e50_v = feat["e50_v"]
-    rsi_v  = feat["rsi_v"];   rsi_p   = feat["rsi_p"]
-    vol_mu = feat["vol_mu"];  stability = feat["stability"]
+    _e9_v  = feat["e9_v"];    e20_v   = feat["e20_v"];   e50_v = feat["e50_v"]
+    rsi_v  = feat["rsi_v"];   rsi_p   = feat["rsi_prev"]
+    _vol_mu = feat["vol_mu"]; stability = feat["stability"]
     liquidity_sc = feat["liquidity_sc"]
     n = len(c)
 
     if setup == "Reversal":
         # Reversal uses its own sub-scoring
         rsi_all  = _rsi_wilder(c, rsi_period)
-        rp90     = float(rsi_all.tail(60).quantile(0.90)) if len(rsi_all) >= 20 else 70.0
-        rp10     = float(rsi_all.tail(60).quantile(0.10)) if len(rsi_all) >= 20 else 25.0
+        # Bug 7 fix: exclude today's RSI from its own reference band so an
+        # extreme oversold reading doesn't compress the range that grades it.
+        rp90     = float(rsi_all.iloc[:-1].tail(60).quantile(0.90)) if len(rsi_all) >= 20 else 70.0
+        rp10     = float(rsi_all.iloc[:-1].tail(60).quantile(0.10)) if len(rsi_all) >= 20 else 25.0
         r_range  = max(rp90 - rp10, 10.0)
         rev_rsi  = float(np.clip((rp90 - rsi_v) / r_range, 0.0, 1.0))
         rev_coil = float(np.clip(sig["coil_sc"], 0.0, 1.0))
         rev_prox = sig["prox_sc"]
-        rev_spr  = sig["vol_quiet_pct"]
+        # FIX-8: vol_quiet_pct is HIGH when today's volume is LOW (quiet).
+        # Reversals require a volume SURGE (panic climax), so the contribution
+        # to the reversal sub-score must be inverted: high vol → high rev_spr.
+        # The old code used vol_quiet_pct directly, which penalised genuine
+        # panic-volume reversal days and rewarded low-volume ones.
+        rev_spr  = 1.0 - sig["vol_quiet_pct"]
         rev_vol  = float((v.iloc[:-1] <= float(v.iloc[-1])).mean()) if n > 1 else 0.5
         # Washout depth: normalise by this stock's own historical washout distribution
         if n >= 20:
@@ -1645,22 +2291,51 @@ def aggregate_score(feat: dict, sig: dict, pen: dict,
         rev_wash = float(np.clip((sig["washout_depth"] - _wd_p25) / _wd_range, 0.0, 1.0))
         # Close tail: P20 of historical close-position-in-range as lower bound
         if n >= 20:
-            _hl_r    = (h - l).replace(0, np.nan)
-            _cp_hist = ((c - l) / _hl_r).dropna()
+            _hl_r    = (h.iloc[:-1] - l.iloc[:-1]).replace(0, np.nan)
+            _cp_hist = ((c.iloc[:-1] - l.iloc[:-1]) / _hl_r).dropna()
             _cp_p20  = float(_cp_hist.quantile(0.20)) if len(_cp_hist) >= 10 else 0.25
         else:
             _cp_p20 = 0.25
         rev_tail = float(np.clip((sig["t1_close_pos"] - _cp_p20) / max(1.0 - _cp_p20, 0.1), 0.0, 1.0))
-        # Weights must sum to 1.0 for signal_str to stay in [0,1].
-        # Previous weights summed to 1.20 — all reversal scores were 20% inflated.
-        # Rescaled proportionally: divide each by 1.20.
-        sub_scores = [rev_rsi  * 0.333, rev_coil * 0.250, rev_prox * 0.167,
-                      rev_spr  * 0.083, rev_vol  * 0.042, rev_wash * 0.083, rev_tail * 0.042]
-        coverage   = sum(1 for s in sub_scores if s > 0) / max(len(sub_scores), 1)
+        # Weights from ScoreConfig — sum = 1.0 (previously hardcoded, now configurable).
+        sub_scores = [rev_rsi  * cfg.REV_W_RSI,  rev_coil * cfg.REV_W_COIL,
+                      rev_prox * cfg.REV_W_PROX,  rev_spr  * cfg.REV_W_SPR,
+                      rev_vol  * cfg.REV_W_VOL,   rev_wash * cfg.REV_W_WASH,
+                      rev_tail * cfg.REV_W_TAIL]
+        # Coverage counts how many underlying inputs were computable (non-None),
+        # not whether their weighted product is > 0 (which silently undercounts
+        # valid signals that happen to contribute 0 pts).
+        _rev_inputs = [rev_rsi, rev_coil, rev_prox, rev_spr, rev_vol, rev_wash, rev_tail]
+        raw_coverage = sum(1 for s in _rev_inputs if s is not None and pd.notna(s)) / max(len(_rev_inputs), 1)
+        coverage   = raw_coverage   # alias for any downstream use
         signal_str = sum(sub_scores)
     else:
-        # Breakout + Pullback unified pipeline
-        vol_sig    = feat["vol_signal"] if setup == "Breakout" else (1.0 - feat["vol_signal"])
+        # Breakout + Pullback + Coiling unified pipeline
+        # ── Adaptive volume weighting ─────────────────────────────
+        # When vol_confirm is False (pre-move / Coiling), volume hasn't fired yet.
+        # Penalising the stock for this makes the screener rank pre-move setups LOW
+        # and only surface them AFTER the move starts.  Instead we reduce vol weight
+        # and redistribute to coil + VCP — the signals that actually predict the move.
+        _vol_confirmed = sig.get("vol_confirm", False)
+        if setup == "Breakout":
+            _vol_w = cfg.W_VOLUME                          # full weight — vol is required
+            _coil_w = cfg.W_COIL
+            _vcp_w  = cfg.W_VCP
+        elif setup == "Coiling":
+            # Pre-move: shrink vol weight, boost coil + VCP
+            _vol_w  = cfg.W_VOLUME * cfg.VOL_WEIGHT_UNCONFIRMED_SCALE
+            _coil_w = cfg.W_COIL  + cfg.COIL_WEIGHT_BOOST
+            _vcp_w  = cfg.W_VCP   + cfg.VCP_WEIGHT_BOOST
+        else:
+            # PB-EMA / PB-Dry / PB-Deep / Base / Reversal: vol_signal = dryup (inverted)
+            _vol_w  = cfg.W_VOLUME
+            _coil_w = cfg.W_COIL
+            _vcp_w  = cfg.W_VCP
+
+        vol_sig = (feat["vol_signal"] if setup == "Breakout"
+                   else feat["vol_signal"] if setup == "Coiling"   # accumulation slope pre-move
+                   else (1.0 - feat["vol_signal"]))                 # dryup desired for all pullback variants
+
         raw_sigs   = {
             "rs":        feat["rs_combined"],
             "rs_sect":   feat["rs_sect"],
@@ -1679,11 +2354,11 @@ def aggregate_score(feat: dict, sig: dict, pen: dict,
             ])),
         }
         weights = {
-            "rs":        cfg.W_RS,     "rs_sect":   cfg.W_RS_SECT,
-            "momentum":  cfg.W_MOMENTUM, "volume": cfg.W_VOLUME,
-            "coil":      cfg.W_COIL,   "ma":       cfg.W_MA,
-            "proximity": cfg.W_PROXIMITY, "vcp":   cfg.W_VCP,
-            "darvas":    cfg.W_DARVAS, "micro":     cfg.W_MICROSTRUCTURE,
+            "rs":        cfg.W_RS,       "rs_sect":   cfg.W_RS_SECT,
+            "momentum":  cfg.W_MOMENTUM, "volume":    _vol_w,
+            "coil":      _coil_w,        "ma":        cfg.W_MA,
+            "proximity": cfg.W_PROXIMITY,"vcp":       _vcp_w,
+            "darvas":    cfg.W_DARVAS,   "micro":     cfg.W_MICROSTRUCTURE,
         }
         # ── Signal validity gates ─────────────────────────────────
         # Each signal is set to None when it genuinely lacks enough
@@ -1705,14 +2380,16 @@ def aggregate_score(feat: dict, sig: dict, pen: dict,
         #   micro     needs at least one cross-sectional rank AND ≥25 bars
         _cs5_ok  = cs_state.get("cs_rs_5d",  {}).get(ticker) is not None
         _cs20_ok = cs_state.get("cs_rs_20d", {}).get(ticker) is not None
-        _sect_ok = (feat["sect_name"] != "?" and
-                    market_ctx.get("sector_returns", {}).get(feat["sect_name"]) is not None)
+        # _sect_ok no longer gates rs_sect: compute_features returns neutral 0.5 when
+        # sector/return data is unavailable, which is the correct contribution.
+        # Nulling it here would zero-out the weight for unmapped stocks, deflating scores.
+        _sect_ok = True
         _micro_cs_ok = any(
             cs_state.get(k, {}).get(ticker) is not None
             for k in ("cs_bb_squeeze", "cs_vol_dryup", "cs_clv_accum")
         )
         if not (_cs5_ok or _cs20_ok) or n < 23:           raw_sigs["rs"]        = None
-        if not _sect_ok:                                   raw_sigs["rs_sect"]   = None
+        # rs_sect always included (neutral 0.5 when data missing — see compute_features)
         if n < cfg.PERCENTILE_WINDOW_SHORT:                raw_sigs["momentum"]  = None
         if n < 8:                                          raw_sigs["volume"]    = None
         if n < 40:                                         raw_sigs["coil"]      = None
@@ -1733,27 +2410,72 @@ def aggregate_score(feat: dict, sig: dict, pen: dict,
         # Only activates when all three exceed INTERACTION_FLOOR (default 0.60)
         # to avoid rewarding marginal co-occurrence.
         _fl  = cfg.INTERACTION_FLOOR
-        _rs  = raw_sigs.get("rs")  or 0.0
-        _vol = raw_sigs.get("volume") or 0.0
-        _prx = raw_sigs.get("proximity") or 0.0
-        if _rs > _fl and _vol > _fl and _prx > _fl:
+        # FIX-5: Use explicit None checks instead of `or 0.0`.
+        # `raw_sigs.get("rs") or 0.0` coerces both None (missing signal) and a
+        # genuine 0.0 float to the same 0.0, permanently disabling the interaction
+        # boost for new/short-history stocks whose rs=None was treated identically
+        # to rs=0.0.  The weighted-sum path above correctly excludes None via
+        # valid_sigs; the interaction guard must match that same contract.
+        _rs_raw  = raw_sigs.get("rs")
+        _vol_raw = raw_sigs.get("volume")
+        _prx_raw = raw_sigs.get("proximity")
+        if (_rs_raw  is not None and pd.notna(_rs_raw)  and
+            _vol_raw is not None and pd.notna(_vol_raw) and
+            _prx_raw is not None and pd.notna(_prx_raw) and
+            _rs_raw > _fl and _vol_raw > _fl and _prx_raw > _fl):
             _norm = (1.0 - _fl) ** 3
-            _interaction = ((_rs - _fl) * (_vol - _fl) * (_prx - _fl)) / (_norm + 1e-9)
+            _interaction = ((_rs_raw - _fl) * (_vol_raw - _fl) * (_prx_raw - _fl)) / (_norm + 1e-9)
             signal_str *= (1.0 + float(np.clip(_interaction, 0.0, cfg.INTERACTION_BOOST_MAX)))
 
-    # Apply coverage floor
-    coverage = max(coverage, cfg.COVERAGE_FLOOR)
-    base_score = signal_str * coverage * 100.0
+    # FIX-3: Keep raw_coverage for the SignalPersist output field so traders can
+    # actually see when a stock has sparse signal coverage (e.g. 2/10 valid signals
+    # shows as 0.20, not artificially inflated to 0.40 by the floor).
+    # The coverage floor is still respected internally for score computation — but
+    # signal_str is already a coverage-weighted average so it naturally degrades
+    # with fewer valid signals; the floor here was only affecting the display field.
+    raw_coverage = coverage
+    coverage_floored = max(coverage, cfg.COVERAGE_FLOOR)  # kept for any future internal use
+    base_score = signal_str * 100.0
 
+    # ── CoilingScore — pure pre-move compression quality (0–100) ─────────
+    # Computed from BB squeeze, vol dryup, CLV, VCP, spread compression, VC.
+    # Independent of vol_confirm: scores HIGH before the move, not after.
+    # Used as a standalone sort/filter in the screener "Coiling" view.
+    coiling_score = _compute_coiling_score(
+        feat["bb_cs"], feat["vdu_cs"], feat["clv_cs"],
+        feat.get("vcp_cs"), feat["sc_feature"], feat["vc_feature"],
+    )
+
+    # ── Multi-day streak persistence bonus ───────────────────────────────
+    # If this stock has been in the top COIL_PERSIST_PRANK tier of BB squeeze
+    # AND vol dryup for COIL_PERSIST_MIN_DAYS+ consecutive days, reward it.
+    # This gives the screener "memory" — a stock coiling for a week should rank
+    # higher than one that just entered compression today.
+    _streak = cs_state.get("coil_streak_days", {}).get(ticker, 0)
+    streak_bonus = 0.0
+    if _streak >= cfg.COIL_PERSIST_MIN_DAYS:
+        # Bonus grows with streak length, capped at COIL_PERSIST_BONUS_CAP
+        streak_bonus = float(np.clip(
+            cfg.COIL_PERSIST_BONUS_CAP * np.tanh((_streak - cfg.COIL_PERSIST_MIN_DAYS + 1) / 4.0),
+            0.0, cfg.COIL_PERSIST_BONUS_CAP
+        ))
     # ── Bonuses ───────────────────────────────────────────────────
+    # ATR expansion onset fires at the START of ATR expansion — the move has
+    # already begun.  Scale it down heavily when vol_confirm is absent so it
+    # only contributes meaningfully as a confirmation signal, not a pre-move
+    # coil signal.  When vol is confirmed it acts as a momentum accelerator.
+    _atr_exp_scale = (1.0 if sig.get("vol_confirm") else cfg.ATR_EXP_NOCONFIRM_SCALE)
+    _atr_exp_bonus = feat["atr_exp_feature"] * cfg.ATR_EXP_CAP * _atr_exp_scale
+
     bonus_raw = (
         sig["sweep_sc"]    * cfg.SWEEP_CAP    +
         sig["oi_sc"]       * cfg.OI_CAP       +
         feat["uv_feature"] * cfg.UV_CAP       +
         feat["cpr_feature"]* cfg.CPR_CAP      +
         feat["sc_feature"] * cfg.SC_CAP       +
-        feat["atr_exp_feature"] * cfg.ATR_EXP_CAP +
-        sig["vcve_sc"]     * cfg.VCVE_CAP
+        _atr_exp_bonus                         +
+        sig["vcve_sc"]     * cfg.VCVE_CAP     +
+        streak_bonus                            # multi-day coil persistence reward
     )
     # Persistence multiplier (compression in last 3 bars)
     # Persistence multiplier: fraction of last 3 bars compressed below P40,
@@ -1763,7 +2485,7 @@ def aggregate_score(feat: dict, sig: dict, pen: dict,
     if n >= 6 and len(vc_ser) >= 10:
         vc3    = vc_ser.iloc[-4:-1].dropna()
         vc_p40 = float(vc_ser.quantile(0.40))
-        vc_p20 = float(vc_ser.quantile(0.20))
+        _vc_p20 = float(vc_ser.quantile(0.20))
         _comp_frac = float((vc3 < vc_p40).mean())   # 0, 0.33, 0.67, or 1.0
         # tanh maps 0→0.5, full-compression→~1.0; scaled to [0.5, 1.0]
         persist = float(np.clip(0.5 + 0.5 * np.tanh(_comp_frac * 2.0), 0.5, 1.0))
@@ -1783,8 +2505,44 @@ def aggregate_score(feat: dict, sig: dict, pen: dict,
     clv_n = feat["clv_cs"] if feat["clv_cs"] is not None else 0.5
     vcp_n = feat["vcp_cs"] if feat["vcp_cs"] is not None else sig["vcp_detail"]["vcp_score"]
     vc_n  = feat["vc_feature"]
-    breakout_prob = float(np.mean([bb_n, vdu_n, clv_n, vcp_n, vc_n]))
-    composite_rank = round(emi * 0.70 + liquidity_sc * 0.20 + min(stability, 1.0) * 0.10, 4)
+    # compression_score is the arithmetic mean of five correlated percentile-rank
+    # signals (BB squeeze, vol dryup, CLV, VCP, VC ratio).  It is *not* a
+    # calibrated probability — the signals share common drivers (vol contraction,
+    # price compression) so they are far from independent.  Treat values above 0.7
+    # as qualitative alignment indicators only.  To convert this into a genuine
+    # forward-return probability, fit a logistic regression or isotonic calibration
+    # against actual FORWARD_RETURN_DAYS outcomes once ≥100 calibration rows exist.
+    compression_score = float(np.mean([bb_n, vdu_n, clv_n, vcp_n, vc_n]))
+
+    # ── VolClimax flag ────────────────────────────────────────────
+    # All three thresholds are derived from each stock's own distribution
+    # via percentile ranks already computed in compute_features:
+    #   vol_ratio P-rank vs VOL_CLIMAX_PRANK  (e.g. top 10% of own history)
+    #   RSI P-rank vs VOL_CLIMAX_RSI_PRANK    (e.g. top 30% of own history)
+    #   price extended beyond its own ext_p90 percentile
+    # No fixed price/RSI levels — purely stock-relative.
+    _vol_prank   = feat.get("vol_prank",  0.0)   # percentile rank of today's vol_ratio
+    _rsi_prank   = feat.get("rsi_prank",  0.0)   # percentile rank of today's RSI value
+    _ext_prank   = feat.get("ext_prank",  0.0)   # percentile rank of price extension
+    vol_climax   = bool(
+        _vol_prank >= cfg.VOL_CLIMAX_PRANK and
+        _rsi_prank >= cfg.VOL_CLIMAX_RSI_PRANK and
+        _ext_prank >= cfg.VOL_CLIMAX_EXT_PRANK
+    )
+    # composite_rank uses emi_pct — EMI expressed as a percentile across the
+    # scored universe — instead of raw EMI.  Raw EMI (score × ATR%) means the
+    # most volatile stock always ranks first regardless of setup quality, because
+    # ATR% is unbounded.  emi_pct maps EMI onto [0, 1] within the current batch,
+    # making the rank driven by relative quality rather than absolute volatility.
+    # _emi_universe is injected by get_screener() after it collects all rows;
+    # during single-stock calls (explain endpoint) it falls back to raw EMI / 10.
+    _emi_universe = cs_state.get("_emi_universe") or {}
+    if _emi_universe:
+        _all_emis = sorted(_emi_universe.values())
+        emi_pct   = float(sum(1 for e in _all_emis if e <= emi) / max(len(_all_emis), 1))
+    else:
+        emi_pct   = float(np.clip(emi / 10.0, 0.0, 1.0))   # graceful fallback
+    composite_rank = round(emi_pct * 0.70 + liquidity_sc * 0.20 + min(stability, 1.0) * 0.10, 4)
 
     # ── Horizon classification ────────────────────────────────────
     _atr_cv   = float(atr.iloc[-20:].std() / (atr.iloc[-20:].mean() + 1e-9)) if n >= 20 else 0.3
@@ -1799,11 +2557,14 @@ def aggregate_score(feat: dict, sig: dict, pen: dict,
 
     rsi_all = _rsi_wilder(c, rsi_period)
     if n >= 40:
-        bo_dh = ((h.rolling(20).max() - c) / (atr.iloc[:-1] + 1e-9)).dropna().tail(60)
+        # Bug 13 fix: exclude today's bar from the reference percentile distributions
+        # so today's price action doesn't shift the breakout/pullback distance bands
+        # that classify how far away the trigger is.
+        bo_dh = ((h.iloc[:-1].rolling(20).max() - c.iloc[:-1]) / (atr.iloc[:-2] + 1e-9)).dropna().tail(60)
         p20_bo = float(np.percentile(bo_dh, 20)) if len(bo_dh) >= 10 else 0.25
         p50_bo = float(np.percentile(bo_dh, 50)) if len(bo_dh) >= 10 else 1.0
         p80_bo = float(np.percentile(bo_dh, 80)) if len(bo_dh) >= 10 else 3.0
-        pb_dh  = ((ind["e20"].iloc[:-1] - c) / (atr.iloc[:-1] + 1e-9)).clip(0).dropna().tail(60)
+        pb_dh  = ((ind["e20"].iloc[:-1] - c.iloc[:-1]) / (atr.iloc[:-2] + 1e-9)).clip(0).dropna().tail(60)
         p20_pb = float(np.percentile(pb_dh, 20)) if len(pb_dh) >= 10 else 0.3
         p50_pb = float(np.percentile(pb_dh, 50)) if len(pb_dh) >= 10 else 1.0
         p80_pb = float(np.percentile(pb_dh, 80)) if len(pb_dh) >= 10 else 2.5
@@ -1814,10 +2575,10 @@ def aggregate_score(feat: dict, sig: dict, pen: dict,
     base_hi  = feat["base_hi"];   base_lo = feat["base_lo"]
     vol_ratio = feat["vol_ratio"]; t1_vr  = sig["t1_vol_ratio"]
     t1_cp    = sig["t1_close_pos"]; cdl_n  = sig["cdl_names"]
-    washout  = sig["washout_depth"]
+    _washout = sig["washout_depth"]
 
     vol_bo_t = sig["vol_bo_thresh"]
-    rsi_p60  = float(rsi_all.tail(60).quantile(0.60)) if len(rsi_all) >= 20 else 55.0
+    rsi_p60  = float(rsi_all.iloc[:-1].tail(60).quantile(0.60)) if len(rsi_all) >= 20 else 55.0  # Bug 4 fix: exclude today's RSI from its own reference percentile
 
     if setup == "Breakout":
         d_bo = (base_hi - ltp) / (atr_v + 1e-9)
@@ -1839,6 +2600,27 @@ def aggregate_score(feat: dict, sig: dict, pen: dict,
         else:
             horizon = "Long 14-30D"
             hz_note = f"{d_bo:.2f} ATR from trigger. Base still forming."
+    elif setup == "Coiling":
+        # Pre-move: price is at the pivot but volume hasn't confirmed yet.
+        # Horizon tells the trader exactly what to watch for.
+        d_bo = (base_hi - ltp) / (atr_v + 1e-9)
+        _streak_days = cs_state.get("coil_streak_days", {}).get(ticker, 0)
+        _streak_str  = f" ({_streak_days}d streak)" if _streak_days >= cfg.COIL_PERSIST_MIN_DAYS else ""
+        # Escalate to "Imminent BO" only when BOTH the score is high AND the streak
+        # confirms multiple days of compression — single-bar high scores are noise.
+        _coil_escalate = (coiling_score >= 75 and _streak_days >= cfg.COIL_PERSIST_MIN_DAYS)
+        if d_bo <= p20_bo or _coil_escalate:
+            horizon = "Imminent BO"
+            hz_note = (f"AT PIVOT — tight base{_streak_str}. CompressionScore {coiling_score:.0f}. "
+                       f"Set alert above {base_hi:.2f}. Entry on vol surge >{round(sig['vol_bo_thresh'],0):.0f} shares.")
+        elif d_bo <= p50_bo:
+            horizon = "Swing 2-5D"
+            hz_note = (f"{d_bo:.2f} ATR below trigger{_streak_str}. "
+                       f"Base tightening — watch for vol expansion day. CompressionScore {coiling_score:.0f}.")
+        else:
+            horizon = "Mid 5-14D"
+            hz_note = (f"Compression building{_streak_str}. "
+                       f"CompressionScore {coiling_score:.0f} — add to watchlist, do not enter yet.")
     elif setup == "Reversal":
         rsi_turn = rsi_v > rsi_p
         if rsi_turn and t1_cp >= 0.60 and sig["raw_cdl"] >= 1:
@@ -1853,6 +2635,7 @@ def aggregate_score(feat: dict, sig: dict, pen: dict,
             horizon = "Mid 5-14D"
             hz_note = f"Panic selling — RSI {rsi_v:.0f}. Wait for RSI tick-up + confirmation."
     else:
+        # PB-EMA / PB-Dry / PB-Deep / Base — all share the same pullback horizon logic
         rsi_turn  = rsi_v > rsi_p
         pb_d_atr  = (e20_v - ltp) / (atr_v + 1e-9)
         # Volume dryup threshold: P40 of this stock's own vol-ratio history
@@ -1864,7 +2647,7 @@ def aggregate_score(feat: dict, sig: dict, pen: dict,
         elif pb_d_atr <= p20_pb and rsi_turn and sig["raw_cdl"] >= 2:
             horizon = "Imminent BO"
             hz_note = f"Reversal candle at EMA. RSI {rsi_v:.0f}↑, pattern: {', '.join(cdl_n) or 'none'}."
-        elif pb_d_atr <= p50_pb and rsi_v >= float(rsi_all.tail(60).quantile(0.35)):
+        elif pb_d_atr <= p50_pb and rsi_v >= float(rsi_all.iloc[:-1].tail(60).quantile(0.35)):  # Bug 9 fix: exclude today from RSI reference
             horizon = "Swing 2-5D"
             hz_note = f"Approaching EMA20. RSI {rsi_v:.0f}. Wait for reversal candle + vol."
         elif pb_d_atr <= p80_pb:
@@ -1890,87 +2673,164 @@ def aggregate_score(feat: dict, sig: dict, pen: dict,
     _atr_cv   = float(atr.tail(20).std() / (atr.tail(20).mean() + 1e-9)) \
                 if n >= 20 else 0.3
     _sup_win  = int(np.clip(round(20 * (1.0 + _atr_cv)), 10, 60))
-    _roll_sup = float(l.tail(_sup_win).min())  # empirical support from price history
+    _roll_sup = float(l.iloc[:-1].tail(_sup_win).min())  # empirical support from price history
+
+    # Nearest swing low within 2 ATR below ltp (used as tighter stop anchor).
+    # Falls back to base_lo / rolling support when no valid swing low found.
+    _swing_low = None
+    if n >= 10:
+        try:
+            _ll = l.values.astype(float)
+            _sl_idx = _argrelmin(_ll, order=3)[0]
+            # Keep only swing lows within the last 15 bars and within 2 ATR of ltp
+            _sl_candidates = [
+                _ll[i] for i in _sl_idx
+                if i >= n - 15 and ltp - _ll[i] <= 2.0 * atr_v and _ll[i] < ltp
+            ]
+            if _sl_candidates:
+                _swing_low = max(_sl_candidates)  # nearest (highest) swing low below ltp
+        except Exception:
+            _swing_low = None
 
     vc_ratio = feat["vc_ratio_now"]
 
-    if setup == "Breakout":
-        _buf   = atr_v * cfg.BO_ENTRY_BUFFER_ATR * max(0.5, vc_ratio)
-        entry  = round(base_hi + _buf, 2) if ltp < base_hi else round(ltp, 2)
-        en_note = (f"Buy above {entry:.2f}" if ltp < base_hi
-                   else f"Breaking now — buy on close above {base_hi:.2f}")
-        tgt   = round(entry + tgt_mult * atr_v, 2)
-        # Use box low as primary stop; fall back to rolling support when
-        # the box is degenerate (width < 1 ATR — not a reliable base).
-        _box_valid = (base_hi - base_lo) >= atr_v
-        _stp_anchor = base_lo if _box_valid else _roll_sup
-        # vc_ratio scales the ATR buffer below support dynamically
-        _stp_buf = atr_v * float(np.clip(vc_ratio, 0.3, 0.7))
-        stp = round(_stp_anchor - _stp_buf, 2)
+    # Score-gate: below MIN_SCORE_FOR_LEVELS don't emit actionable levels —
+    # they would be misleading precision on a weak setup.
+    _levels_ok = total >= cfg.MIN_SCORE_FOR_LEVELS
 
-    elif setup == "Reversal":
-        entry  = round(ltp, 2)
-        en_note = f"Buy at open — reversal. RSI {rsi_v:.0f}. Stop below {float(l.iloc[-1]):.2f}"
-        # Anchor to today's actual wick low; buffer scaled by vc_ratio
-        _stp_buf = atr_v * float(np.clip(vc_ratio, 0.15, 0.35))
-        stp   = round(float(l.iloc[-1]) - _stp_buf, 2)
-        tgt   = max(round(e20_v, 2), round(entry + tgt_mult * atr_v, 2))
+    if not _levels_ok:
+        entry    = None
+        tgt      = None
+        stp      = None
+        en_note  = f"Score {total:.0f} < {cfg.MIN_SCORE_FOR_LEVELS:.0f} — watchlist only, no entry yet"
+        risk_raw = reward_raw = rr = move_pct = kelly = 0.0
+    else:
+        if setup in ("Breakout", "Coiling"):
+            _buf   = atr_v * cfg.BO_ENTRY_BUFFER_ATR * max(0.5, vc_ratio)
+            entry  = round(base_hi + _buf, 2)
+            if setup == "Coiling":
+                en_note = (f"Set limit-buy alert above {entry:.2f}. "
+                           f"Do NOT enter until vol exceeds {round(sig['vol_bo_thresh'],0):.0f} shares.")
+            else:
+                en_note = (f"Buy above {entry:.2f}" if ltp < base_hi
+                           else f"Breaking now — buy on close above {base_hi:.2f}")
+            if sig.get("market_kill"):
+                en_note += " | ⚠ Market down — confirm before entry"
+            tgt   = round(entry + tgt_mult * atr_v, 2)
+            # ── Resistance cap: if tgt lands within TGT_RESIST_ATR_BUFFER ATR of a
+            # prior high (excluding the current base_hi itself), cap it below that high.
+            # Resistance is derived from the stock's own 3-month price history —
+            # no fixed % threshold.
+            _hist_hi = float(h.iloc[:-1].tail(min(66, n - 1)).max()) if n > 1 else base_hi
+            if (_hist_hi > base_hi and
+                    tgt >= _hist_hi - cfg.TGT_RESIST_ATR_BUFFER * atr_v and
+                    tgt <= _hist_hi + cfg.TGT_RESIST_ATR_BUFFER * atr_v):
+                tgt = round(_hist_hi - cfg.TGT_RESIST_ATR_BUFFER * atr_v * 0.5, 2)
+                en_note += f" | Resistance ~₹{_hist_hi:.0f}"
+            # Prefer nearest swing low as stop anchor; fall back to box low / rolling support.
+            if _swing_low is not None and (entry - _swing_low) <= 2.0 * atr_v:
+                _stp_anchor = _swing_low
+            else:
+                _box_valid  = (base_hi - base_lo) >= atr_v
+                _stp_anchor = base_lo if _box_valid else _roll_sup
+            _stp_buf = atr_v * float(np.clip(vc_ratio, 0.3, 0.7))
+            stp = round(_stp_anchor - _stp_buf, 2)
 
-    else:  # Pullback
-        entry  = round(ltp, 2)
-        en_note = f"Buy near EMA20 ({e20_v:.2f}) on reversal candle"
-        tgt_s  = round(float(h.tail(20).max()) * cfg.PB_TARGET_HIGH_FRAC, 2)
-        tgt    = max(tgt_s, round(entry + tgt_mult * atr_v, 2))
-        # EMA50-based stop is unreliable when EMA50 > ltp (deep pullback).
-        # Use rolling empirical support instead, with ATR buffer scaled by vc_ratio.
-        _stp_buf = atr_v * float(np.clip(vc_ratio, 0.3, 0.7))
-        if e50_v < entry:
-            # EMA50 is below price — safe to anchor there
-            stp = round(e50_v - _stp_buf, 2)
+        elif setup == "Reversal":
+            entry  = round(ltp, 2)
+            en_note = f"Buy at open — reversal. RSI {rsi_v:.0f}. Stop below {float(l.iloc[-1]):.2f}"
+            _stp_buf = atr_v * float(np.clip(vc_ratio, 0.15, 0.35))
+            # Prefer swing low as stop anchor for tighter RR
+            if _swing_low is not None:
+                stp = round(_swing_low - _stp_buf, 2)
+            else:
+                stp = round(float(l.iloc[-1]) - _stp_buf, 2)
+            tgt   = max(round(e20_v, 2), round(entry + tgt_mult * atr_v, 2))
+
         else:
-            # EMA50 is above price (deep pullback) — anchor to rolling support
-            stp = round(_roll_sup - _stp_buf, 2)
+            # PB-EMA / PB-Dry / PB-Deep / Base
+            entry  = round(ltp, 2)
+            # Warn when LTP is materially above EMA20 — user is not at support yet.
+            # Threshold derived from TGT_RESIST_ATR_BUFFER (same ATR scale).
+            _dist_above_ema = (ltp - e20_v) / (atr_v + 1e-9)
+            if _dist_above_ema > cfg.PB_NOTE_EMA_ATR_WARN:
+                en_note = (f"LTP ₹{ltp:.0f} is {_dist_above_ema:.1f} ATR above EMA20 "
+                           f"({e20_v:.2f}) — not at support yet. Wait for pullback.")
+            else:
+                en_note = f"Buy near EMA20 ({e20_v:.2f}) on reversal candle"
+            tgt_s  = round(float(h.tail(20).max()) * cfg.PB_TARGET_HIGH_FRAC, 2)
+            tgt    = max(tgt_s, round(entry + tgt_mult * atr_v, 2))
+            # Resistance cap for pullback targets too
+            _hist_hi_pb = float(h.iloc[:-1].tail(min(66, n - 1)).max()) if n > 1 else tgt
+            if (tgt >= _hist_hi_pb - cfg.TGT_RESIST_ATR_BUFFER * atr_v and
+                    tgt <= _hist_hi_pb + cfg.TGT_RESIST_ATR_BUFFER * atr_v and
+                    _hist_hi_pb > entry):
+                tgt = round(_hist_hi_pb - cfg.TGT_RESIST_ATR_BUFFER * atr_v * 0.5, 2)
+                en_note += f" | Resistance ~₹{_hist_hi_pb:.0f}"
+            _stp_buf = atr_v * float(np.clip(vc_ratio, 0.3, 0.7))
+            if _swing_low is not None and _swing_low < entry:
+                stp = round(_swing_low - _stp_buf, 2)
+            elif e50_v < entry:
+                stp = round(e50_v - _stp_buf, 2)
+            else:
+                stp = round(_roll_sup - _stp_buf, 2)
 
-    # ── Universal stop sanity guard ───────────────────────────────
-    # If stop is still at or above entry for any reason, push it down
-    # to entry minus the stock's own minimum realistic risk distance.
-    # This replaces the old `max(risk_raw, 0.01)` floor which silently
-    # produced nonsense RR values instead of correcting the stop itself.
-    if stp >= entry:
-        stp = round(entry - _min_risk, 2)
+        # ── Universal stop sanity guard ───────────────────────────
+        if stp >= entry:
+            stp = round(entry - _min_risk, 2)
 
-    risk_raw   = max(entry - stp, _min_risk)
-    reward_raw = max(tgt - entry, _min_risk)
-    rr         = round(reward_raw / risk_raw, 2)
-    move_pct   = round((tgt - entry) / entry * 100, 1) if entry != 0 else 0.0
+        risk_raw   = max(entry - stp, _min_risk)
+        reward_raw = max(tgt - entry, _min_risk)
+        rr         = round(reward_raw / risk_raw, 2)
+        move_pct   = round((tgt - entry) / entry * 100, 1) if entry != 0 else 0.0
 
-    # ── Win-rate prior: observed DB data takes precedence over formula ──
-    # 1. Per-stock observed win rate (≥3 outcomes in calibration DB)
-    # 2. Per-setup observed win rate (≥5 outcomes)
-    # 3. Formula fallback based on RS + stability
-    _wr_stock = STATE["per_stock_winrate"].get(ticker)
-    _wr_setup = STATE.get("_setup_winrate", {}).get(setup)
-    if _wr_stock is not None:
+    # ── Win-rate prior + Kelly (only meaningful when levels are valid) ──
+    _wr_stock   = STATE["per_stock_winrate"].get(ticker)
+    _wr_setup   = STATE.get("_setup_winrate", {}).get(setup)
+    # Count how many calibration rows back this setup type (need KELLY_MIN_CALIB_ROWS
+    # before the formula-derived win-rate is better than noise).
+    _sw_counts  = STATE.get("_setup_winrate_counts", {})
+    _calib_n    = _sw_counts.get(setup, 0)
+    _stock_calib_n = STATE.get("_stock_calib_counts", {}).get(ticker, 0)
+    _has_real_calib = (_stock_calib_n >= cfg.KELLY_MIN_CALIB_ROWS or
+                       _calib_n >= cfg.KELLY_MIN_CALIB_ROWS)
+
+    if _wr_stock is not None and _stock_calib_n >= cfg.KELLY_MIN_CALIB_ROWS:
         wr_prior = float(_wr_stock)
-    elif _wr_setup is not None:
-        # Blend setup prior with formula — the formula is a decent prior
-        # when we have setup-level data but not yet stock-level data.
+    elif _wr_setup is not None and _calib_n >= cfg.KELLY_MIN_CALIB_ROWS:
         _formula = float(np.clip(cfg.WR_BASE + cfg.WR_RS_COEF * feat["rs_combined"] + cfg.WR_STAB_COEF * stability, 0.30, 0.70))
         wr_prior = float(cfg.CALIB_ADAPT_ALPHA * _wr_setup + (1.0 - cfg.CALIB_ADAPT_ALPHA) * _formula)
     else:
+        # Not enough calibration data — fall back to formula but mark it uncalibrated
         wr_prior = float(np.clip(cfg.WR_BASE + cfg.WR_RS_COEF * feat["rs_combined"] + cfg.WR_STAB_COEF * stability, 0.30, 0.70))
-    kelly    = round(float(np.clip(
-        0.5 * (wr_prior * max(rr, 0.5) - (1.0 - wr_prior)) / (max(rr, 0.5) + 1e-9), 0.0, 0.25)), 3)
+
+    if _levels_ok and _has_real_calib:
+        kelly = round(float(np.clip(
+            0.5 * (wr_prior * max(rr, 0.5) - (1.0 - wr_prior)) / (max(rr, 0.5) + 1e-9), 0.0, 0.25)), 3)
+    else:
+        # None signals "not enough calibration data" — frontend shows "—" instead of 0
+        kelly = None
 
     # ── Reconstruct per-component scores (pts for explain endpoint) ─
     rs_pts      = round(feat["rs_combined"] * cfg.W_RS * 100, 1)
     rs_sect_pts = round(feat["rs_sect"] * cfg.W_RS_SECT * 100, 1)
-    vol_pts     = round(feat["vol_signal"] * cfg.W_VOLUME * 100, 1) if setup == "Breakout" \
-                  else round((1.0 - feat["vol_signal"]) * cfg.W_VOLUME * 100, 1)
-    coil_pts    = round(sig["coil_sc"] * 10, 1)
+    if setup == "Coiling":
+        # Coiling: accumulation slope (no inversion), reduced weight matches scoring pipeline
+        vol_pts = round(feat["vol_signal"] * cfg.W_VOLUME * cfg.VOL_WEIGHT_UNCONFIRMED_SCALE * 100, 1)
+    elif setup == "Breakout" or setup == "Reversal":
+        # vol surge desired, full weight
+        vol_pts = round(feat["vol_signal"] * cfg.W_VOLUME * 100, 1)
+    else:
+        # PB-EMA / PB-Dry / PB-Deep / Base: vol dryup desired (inverted), full weight
+        vol_pts = round((1.0 - feat["vol_signal"]) * cfg.W_VOLUME * 100, 1)
+    # coil_pts is the DISPLAY column (0-10 scale, matching barFmt max=10).
+    # The weight boost already affects score computation via signal_str above;
+    # here we just normalise to 0-10 so the column never overflows its denominator.
+    coil_pts    = round(sig["coil_sc"] * 10.0, 1)
     ma_pts      = round(feat["ma_feature"] * 10, 1)
     prox_pts    = round(sig["prox_sc"] * 10, 1)
-    vcp_pts     = round(sig["vcp_sc"] * 10, 1)
+    # vcp_pts is the DISPLAY column (0-10 scale, matching barFmt max=10).
+    vcp_pts     = round(sig["vcp_sc"] * 10.0, 1)
     bb_pts      = round(float(feat["bb_cs"]) * 8, 1) if feat["bb_cs"] is not None else 4.0
     vdu_pts     = round(float(feat["vdu_cs"]) * 8, 1) if feat["vdu_cs"] is not None else 4.0
     clv_pts     = round(float(feat["clv_cs"]) * 8, 1) if feat["clv_cs"] is not None else 4.0
@@ -1982,7 +2842,9 @@ def aggregate_score(feat: dict, sig: dict, pen: dict,
     atp_pts     = round(sig["atp_sc"] * 5, 1)
     cdl_pts     = round(sig["cdl_sc"] * 10, 1)
 
-    total_pen = sum(max(0.0, p) for p in pen["penalties"].values())
+    # SoftPenalty: sum of all deductions (positive p_val values) only.
+    # vix and breadth can be negative (bonus) — exclude those from the display.
+    total_pen = sum(p for p in pen["penalties"].values() if p > 0)
 
     return {
         # ── Core ──────────────────────────────────────────────────
@@ -1992,6 +2854,10 @@ def aggregate_score(feat: dict, sig: dict, pen: dict,
         "Entry": entry, "Target": tgt, "Stop": stp,
         "Risk": round(risk_raw, 1), "Reward": round(reward_raw, 1),
         "RR": rr, "KellyFrac": kelly, "Move%": move_pct, "EntryNote": en_note,
+        # KellyFrac is None when calibration rows < KELLY_MIN_CALIB_ROWS (show '—' in UI)
+        # ── Pre-move coiling quality (independent of vol_confirm) ─
+        "CoilingScore": round(coiling_score, 1),
+        "CoilStreakDays": _streak,
         # ── Component scores ──────────────────────────────────────
         "RS": rs_pts, "RS_Sector": rs_sect_pts,
         "Volume": vol_pts, "InstVol": inst_pts,
@@ -2003,8 +2869,10 @@ def aggregate_score(feat: dict, sig: dict, pen: dict,
         "ATR_Pot": atp_pts, "Candle": cdl_pts,
         "Darvas": darvas_pts,
         # ── Signal Persistence ────────────────────────────────────
-        "BreakoutProb": round(breakout_prob, 3),
-        "SignalPersist": round(coverage, 2),
+        "CompressionScore": round(compression_score, 3),  # renamed from BreakoutProb — not a calibrated probability
+        "BreakoutProb": round(compression_score, 3),       # kept for backward-compat with older frontend builds
+        "VolClimax":    vol_climax,                         # True = exhaustion warning, not a buy signal
+        "SignalPersist": round(raw_coverage, 2),   # FIX-3: raw, un-floored coverage
         # ── VCP detail ────────────────────────────────────────────
         "VCP_Detected":    sig["vcp_detail"]["vcp_detected"],
         "VCP_Pullbacks":   sig["vcp_detail"]["vcp_pullback_n"],
@@ -2036,8 +2904,8 @@ def aggregate_score(feat: dict, sig: dict, pen: dict,
         # Scale to 0-3 range using VCVE_CAP as the reference (same bonus bucket)
         "VolVelocity":   round(sig.get("vol_velocity", 0) * cfg.VCVE_CAP, 1),
         "RSDivergence":  round(feat["rs_div_pct"] * cfg.OI_CAP, 1),
-        "CSRank5d":      round(feat["rs_combined"], 3),
-        "AbsRS":         round(feat["rs_combined"], 3),
+        "CSRank5d":      round(cs_state.get("cs_rs_5d", {}).get(ticker, feat["rs_combined"]), 3),
+        "AbsRS":         round(feat["abs_rs"], 3),
         "RSI7":          round(feat["rsi_v"], 1),
         "VolRatio":      round(feat["vol_ratio"], 2),
         "VolZ":          round(feat["vol_z"], 2),
@@ -2053,7 +2921,7 @@ def aggregate_score(feat: dict, sig: dict, pen: dict,
         "LiquidityScore": round(liquidity_sc, 3),
         "SoftPenalty":    round(total_pen, 1),
         "ADVTurnover":    round(feat["adv_turnover"] / 1e7, 2),
-        "AboveSMA200":    ltp > ind["sma200"] - 0.5 * feat["atr_v"],
+        "AboveSMA200":    ltp > ind["sma200"],
         # Reversal sub-scores (set to 0 for non-reversals)
         "Rev_RSI_Pts":    0.0, "Rev_Vol_Pts":     0.0,
         "Rev_Wash_Pts":   0.0, "Rev_Tail_Pts":    0.0,
@@ -2075,6 +2943,12 @@ def aggregate_score(feat: dict, sig: dict, pen: dict,
                     for k, v in sig.items()
                     if isinstance(v, (int, float, bool))},
         "penalties": {k: round(v, 2) for k, v in pen["penalties"].items()},
+        # ── Improvement flags (visible in explain + debug) ─────────
+        "BarConfirmed":      sig.get("bar_confirmed", True),
+        "VolConfirmAllowed": sig.get("vol_confirm_allowed", True),
+        "WeeklyTrendUp":     ind.get("weekly_trend_up", True),
+        "MarketKill":        sig.get("market_kill", False),
+        "LevelsValid":       _levels_ok,
     }
 
 
@@ -2118,20 +2992,23 @@ def score_stock_dual(ticker: str, df: pd.DataFrame,
     rsi_period  = int(STATE.get("rsi_period", 7))
     mkt         = STATE.get("mkt", {})
     cs_state    = {
-        "cs_rs_5d":     STATE.get("cs_rs_5d",     {}),
-        "cs_rs_20d":    STATE.get("cs_rs_20d",     {}),
-        "cs_bb_squeeze":STATE.get("cs_bb_squeeze", {}),
-        "cs_vol_dryup": STATE.get("cs_vol_dryup",  {}),
-        "cs_clv_accum": STATE.get("cs_clv_accum",  {}),
-        "cs_vcp":       STATE.get("cs_vcp",        {}),
-        "rs_div_hist":  STATE.get("rs_div_hist",   {}),
-        "breadth_cache":STATE.get("breadth_cache"),
-        "breadth_hist": STATE.get("breadth_hist",  []),
+        "cs_rs_5d":       STATE.get("cs_rs_5d",        {}),
+        "cs_rs_20d":      STATE.get("cs_rs_20d",        {}),
+        "cs_bb_squeeze":  STATE.get("cs_bb_squeeze",    {}),
+        "cs_vol_dryup":   STATE.get("cs_vol_dryup",     {}),
+        "cs_clv_accum":   STATE.get("cs_clv_accum",     {}),
+        "cs_vcp":         STATE.get("cs_vcp",           {}),
+        "coil_streak_days": STATE.get("coil_streak_days", {}),
+        "rs_div_hist":    STATE.get("rs_div_hist",      {}),
+        "breadth_cache":  STATE.get("breadth_cache"),
+        "breadth_hist":   STATE.get("breadth_hist",     []),
+        "_emi_universe":  STATE.get("_emi_universe",    {}),
     }
     # Add market context into cs_state for convenience
     cs_state.update({
         "sector_returns":      STATE.get("sector_returns", {}),
         "sector_returns_10d":  STATE.get("sector_returns_10d", {}),
+        "nifty_intraday_chg":  STATE.get("mkt", {}).get("nifty_intraday_chg", 0.0),
     })
     param_reg   = STATE.setdefault("param_registry", {
         "tanh_w": [], "inst_sigma": [], "prox_lambda": [],
@@ -2144,6 +3021,8 @@ def score_stock_dual(ticker: str, df: pd.DataFrame,
     market_ctx["sector_returns_10d"] = STATE.get("sector_returns_10d", {})
     market_ctx["breadth_cache"]      = STATE.get("breadth_cache")
     market_ctx["breadth_hist"]       = STATE.get("breadth_hist", [])
+    # Intraday Nifty change for circuit-breaker logic in compute_penalties
+    market_ctx["nifty_intraday_chg"] = STATE.get("mkt", {}).get("nifty_intraday_chg", 0.0)
 
     vol_ma20 = float(df["volume"].rolling(20).mean().iloc[-1]) if len(df) >= 20 else float(df["volume"].mean())
 
@@ -2289,8 +3168,8 @@ def get_live_master() -> pd.DataFrame:
         url = "https://assets.upstox.com/market-quote/instruments/exchange/NSE.json.gz"
         r   = requests.get(url, timeout=10)
         if r.status_code == 200:
-            with gzip.GzipFile(fileobj=io.BytesIO(r.content)) as gz:
-                data = json.load(gz)
+            with gzip.GzipFile(fileobj=_io.BytesIO(r.content)) as gz:
+                data = _json.load(gz)
             df = pd.DataFrame(data)
             _master_cache["df"] = df; _master_cache["ts"] = time.time()
             return df
@@ -2338,6 +3217,8 @@ _mkt_cache: Dict = {"data": {}, "ts": 0.0}
 def get_market_context() -> dict:
     if _mkt_cache["data"] and time.time() - _mkt_cache["ts"] < SCORE_CFG.MKT_CONTEXT_TTL:
         return _mkt_cache["data"]
+    # Kick off a sector-map refresh in parallel (no-op if recently done)
+    _maybe_refresh_sector_map()
     # vix_median / vix_sigma start as None and are filled from live data below.
     # They are only used inside compute_penalties which guards on vix_v is not None,
     # so the fallback values here are never actually used in scoring — they only
@@ -2345,6 +3226,7 @@ def get_market_context() -> dict:
     # explicit rather than silently using made-up distribution parameters.
     out = dict(nifty_r5=None, nifty_r20=None, nifty_above_20dma=True, nifty_above_50dma=True,
                regime="BULL", vix_level=None, vix_falling=True, vix_median=None, vix_sigma=None,
+               nifty_intraday_chg=0.0,
                sector_returns={}, sector_returns_10d={}, top_sectors=set(),
                market_ok=True, market_notes=[])
     try:
@@ -2363,6 +3245,15 @@ def get_market_context() -> dict:
             if   _gap > 0 and _slope > 0: out["regime"] = "BULL"
             elif _gap < -_natr:           out["regime"] = "BEAR"
             else:                         out["regime"] = "CHOP"
+            # Intraday change: prefer live Nifty LTP from live_quotes_cache so the
+            # circuit-breaker fires on today's actual move, not yesterday's daily return.
+            # Falls back to day-over-day daily close when live quote is unavailable.
+            _nifty_lq = STATE.get("live_quotes_cache", {}).get("NSE_INDEX|Nifty 50", {})
+            _nifty_live_ltp = _nifty_lq.get("ltp") if _nifty_lq else None
+            if _nifty_live_ltp is not None and len(c) >= 2:
+                out["nifty_intraday_chg"] = float(_nifty_live_ltp / float(c.iloc[-2]) - 1)
+            elif len(c) >= 2:
+                out["nifty_intraday_chg"] = float(c.iloc[-1] / c.iloc[-2] - 1)
     except Exception:
         pass
     try:
@@ -2377,6 +3268,7 @@ def get_market_context() -> dict:
     except Exception:
         pass
     sr5: dict = {}; sr10: dict = {}
+    _sect_errors: list = []
 
     def _fetch_sec(nt):
         nm, tk = nt
@@ -2387,14 +3279,35 @@ def get_market_context() -> dict:
                 r5  = float(sc.iloc[-1] / sc.iloc[-6]  - 1) if len(sc) >= 6  else None
                 r10 = float(sc.iloc[-1] / sc.iloc[-11] - 1) if len(sc) >= 11 else None
                 return nm, r5, r10
-        except Exception:
-            pass
-        return nm, None, None
+            return nm, None, None  # empty response — no exception but no data
+        except Exception as e:
+            return nm, None, str(e)  # propagate error string for logging
 
     with ThreadPoolExecutor(max_workers=8) as ex:
-        for nm, r5, r10 in ex.map(_fetch_sec, SECTOR_TICKERS.items()):
+        for result in ex.map(_fetch_sec, SECTOR_TICKERS.items()):
+            nm, r5, r10_or_err = result
+            if isinstance(r10_or_err, str):
+                # r10 slot used to carry error string when r5 is None
+                _sect_errors.append(f"{nm}: {r10_or_err}")
+                continue
             if r5  is not None: sr5[nm]  = r5
-            if r10 is not None: sr10[nm] = r10
+            if r10_or_err is not None: sr10[nm] = r10_or_err
+
+    if _sect_errors:
+        import logging as _logging
+        _logging.getLogger(__name__).warning(
+            "sector_returns: %d/%d sector fetches failed — rs_sect will use neutral 0.5 "
+            "for stocks in missing sectors. Failed: %s",
+            len(_sect_errors), len(SECTOR_TICKERS),
+            ", ".join(_sect_errors[:5]) + (" ..." if len(_sect_errors) > 5 else "")
+        )
+    if not sr5:
+        import logging as _logging
+        _logging.getLogger(__name__).error(
+            "sector_returns is EMPTY — all sector index fetches failed. "
+            "rs_sect will be 0.5 (neutral) for all stocks. "
+            "Check Yahoo Finance connectivity for ^CNXIT, ^NSEBANK, etc."
+        )
     out["sector_returns"]    = sr5
     out["sector_returns_10d"]= sr10
     if sr5:
@@ -2418,47 +3331,84 @@ def _cdf_rank_dict(raw: dict) -> dict:
 
 
 def compute_cs_ranks(st: dict) -> None:
-    cache = st.get("raw_data_cache", {})
+    """Compute all cross-sectional ranks from a snapshot of raw_data_cache.
+
+    All heavy pandas work is done on a local snapshot (no lock held during
+    computation).  Results are written back to STATE atomically under
+    STATE_LOCK at the end, preventing races with the SSE stream and the
+    screener route that read these dicts concurrently.
+    """
+    cfg = SCORE_CFG
+    # Take a stable snapshot so we don't hold the lock during computation.
+    with STATE_LOCK:
+        cache = dict(st.get("raw_data_cache", {}))
     if len(cache) < 3:
         return
 
     r5r: dict = {}; r20r: dict = {}
+    # Min-bar requirements are derived from the window definitions in ScoreConfig:
+    #   5d RS  needs iloc[-6]  → requires RS_WINDOW_5D  + 1 = 6 bars
+    #   20d RS needs iloc[-21] → requires RS_WINDOW_20D + 1 = 21 bars
+    # Stocks with fewer bars get a NaN return and would either distort or
+    # (via rankdata) unfairly rank near the middle of the universe.  We
+    # exclude them from the rank computation entirely.
+    # Fix: use iloc[-2] (yesterday close) not iloc[-1] (today) as the return base.
+    # Each stock was being ranked against a universe that included its own today
+    # return, inflating RS for any stock having a big green day.  Yesterday's
+    # close measures pre-move relative strength cleanly.
+    _MIN_5D  = SCORE_CFG.RS_WINDOW_5D  + 2   # 7  (iloc[-2] base + 5d back = iloc[-7])
+    _MIN_20D = SCORE_CFG.RS_WINDOW_20D + 2   # 22 (iloc[-2] base + 20d back = iloc[-22])
     for sym, df in cache.items():
         c = df["close"]
-        if len(c) >= 6:  r5r[sym]  = float(c.iloc[-1] / c.iloc[-6]  - 1)
-        if len(c) >= 21: r20r[sym] = float(c.iloc[-1] / c.iloc[-21] - 1)
-    st["cs_rs_5d"]  = _cdf_rank_dict(r5r)
-    st["cs_rs_20d"] = _cdf_rank_dict(r20r)
+        if len(c) >= _MIN_5D:  r5r[sym]  = float(c.iloc[-2] / c.iloc[-7]  - 1)
+        if len(c) >= _MIN_20D: r20r[sym] = float(c.iloc[-2] / c.iloc[-22] - 1)
+    cs_rs_5d  = _cdf_rank_dict(r5r)
+    cs_rs_20d = _cdf_rank_dict(r20r)
 
     bbr: dict = {}
     for sym, df in cache.items():
         try:
             c = df["close"]
-            if len(c) < 30: continue
+            if len(c) < cfg.CS_MIN_BARS_BB: continue
             bw = (2.0 * c.rolling(20).std() / c.rolling(20).mean().replace(0, np.nan)).dropna()
             if len(bw) < 10: continue
-            bbr[sym] = float((bw.iloc[:-1] <= float(bw.iloc[-1])).mean())
+            # Compare today's BB width against the historical distribution (excluding today)
+            # so a breakout-day gap-up doesn't inflate the current BB width and
+            # falsely rank the stock as "wide" when it is actually expanding.
+            # FIX: We want a HIGH rank when bands are TIGHT (squeezed), so we measure
+            # what fraction of historical widths are >= today's width.
+            # Previously this used (bw.iloc[:-1] <= bw.iloc[-1]).mean() which gave a
+            # HIGH rank for WIDE bands — the exact opposite of a squeeze signal.
+            bbr[sym] = float((bw.iloc[:-1] >= float(bw.iloc[-1])).mean())
         except Exception:
             pass
-    st["cs_bb_squeeze"] = _cdf_rank_dict(bbr)
+    cs_bb_squeeze = _cdf_rank_dict(bbr)
 
     vdr: dict = {}
     for sym, df in cache.items():
         try:
             v = df["volume"].replace(0, np.nan).dropna()
-            if len(v) < 25: continue
+            if len(v) < cfg.CS_MIN_BARS_VDR: continue
             ratio = float(v.tail(5).mean()) / (float(v.tail(20).mean()) + 1e-9)
             h_r   = (v.rolling(5).mean() / (v.rolling(20).mean() + 1e-9)).dropna()
-            vdr[sym] = float((h_r >= ratio).mean()) if len(h_r) >= 5 else float(np.clip(1.0 - ratio, 0.0, 1.0))
+            if len(h_r) >= 5:
+                # Fraction of historical 5d/20d vol ratios that are >= today's ratio.
+                # High rank = today's ratio is LOW relative to history = vol drying up = coiling.
+                vdr[sym] = float((h_r >= ratio).mean())
+            else:
+                # FIX: Fallback must also express "low vol ratio = good squeeze".
+                # clip(ratio, 0, 2) so 0 = max dryup, 2 = 2× avg vol.
+                # Invert so low ratio → high score.  Clamp to [0, 1].
+                vdr[sym] = float(np.clip(1.0 - ratio / 2.0, 0.0, 1.0))
         except Exception:
             pass
-    st["cs_vol_dryup"] = _cdf_rank_dict(vdr)
+    cs_vol_dryup = _cdf_rank_dict(vdr)
 
     clvr: dict = {}
     for sym, df in cache.items():
         try:
             c = df["close"]; hh = df["high"]; ll = df["low"]; vv = df["volume"]
-            if len(c) < 25: continue
+            if len(c) < cfg.CS_MIN_BARS_CLV: continue
             hl  = (hh - ll).replace(0, np.nan)
             clv = ((c - ll) - (hh - c)) / hl
             mf  = clv.fillna(0) * vv
@@ -2468,25 +3418,26 @@ def compute_cs_ranks(st: dict) -> None:
             clvr[sym] = float((rmf.iloc[:-1] <= float(rmf.iloc[-1])).mean())
         except Exception:
             pass
-    st["cs_clv_accum"] = _cdf_rank_dict(clvr)
+    cs_clv_accum = _cdf_rank_dict(clvr)
 
     vcpr: dict = {}
     for sym, df in cache.items():
         try:
-            if len(df) < 60: continue
+            if len(df) < cfg.CS_MIN_BARS_VCP: continue
             c = df["close"]; hh = df["high"]; ll = df["low"]; vv = df["volume"]
             tr  = pd.concat([hh - ll, (hh - c.shift(1)).abs(), (ll - c.shift(1)).abs()], axis=1).max(axis=1)
             atr = tr.ewm(alpha=1 / SCORE_CFG.ATR_PERIOD, adjust=False).mean()
             vcpr[sym] = float(detect_vcp(c, hh, ll, vv, atr).get("vcp_score", 0.0))
         except Exception:
             pass
-    st["cs_vcp"] = _cdf_rank_dict(vcpr)
+    cs_vcp = _cdf_rank_dict(vcpr)
 
     _ab = 0; _tot = 0
+    new_breadth_cache = None; new_breadth_hist = None
     for sym, df in cache.items():
         try:
             c = df["close"]
-            if len(c) < 20: continue
+            if len(c) < cfg.CS_MIN_BARS_BRD: continue
             e20 = float(c.ewm(span=20, adjust=False).mean().iloc[-1])
             _tot += 1
             if float(c.iloc[-1]) > e20: _ab += 1
@@ -2494,8 +3445,9 @@ def compute_cs_ranks(st: dict) -> None:
             pass
     if _tot >= 10:
         br = _ab / _tot
-        st["breadth_cache"] = br
-        st["breadth_hist"]  = (st.get("breadth_hist", []) + [br])[-200:]
+        new_breadth_cache = br
+        with STATE_LOCK:
+            new_breadth_hist = (st.get("breadth_hist", []) + [br])[-200:]
 
     r5a: dict = {}; r10a: dict = {}
     for sym, df in cache.items():
@@ -2507,10 +3459,61 @@ def compute_cs_ranks(st: dict) -> None:
             if len(c) >= 11: r10a.setdefault(sec, []).append(float(c.iloc[-1] / c.iloc[-11] - 1))
         except Exception:
             pass
-    st["sector_returns"]     = {**st.get("mkt", {}).get("sector_returns",     {}),
-                                 **{s: float(np.mean(v)) for s, v in r5a.items()}}
-    st["sector_returns_10d"] = {**st.get("mkt", {}).get("sector_returns_10d", {}),
-                                 **{s: float(np.mean(v)) for s, v in r10a.items()}}
+
+    # ── Coil streak: count consecutive days each stock has been in top-tier ──
+    # A stock in the top COIL_PERSIST_PRANK of BOTH BB squeeze AND vol dryup
+    # increments its streak by 1.  Others reset to 0.
+    # Read the previous streak from STATE under the lock, then update.
+    with STATE_LOCK:
+        prev_streaks = dict(st.get("coil_streak_days", {}))
+    new_streaks: dict = {}
+    _bb_thresh  = cfg.COIL_PERSIST_PRANK
+    _vdu_thresh = cfg.COIL_PERSIST_PRANK
+    _clv_thresh = 0.50   # CLV must be above median (any institutional accumulation)
+    for sym in cache:
+        bb_rank  = cs_bb_squeeze.get(sym, 0.0)
+        vdu_rank = cs_vol_dryup.get(sym, 0.0)
+        clv_rank = cs_clv_accum.get(sym, 0.0)
+        # Streak requires: tight bands + vol drying up + at least median CLV accumulation
+        in_top   = (bb_rank >= _bb_thresh) and (vdu_rank >= _vdu_thresh) and (clv_rank >= _clv_thresh)
+        new_streaks[sym] = (prev_streaks.get(sym, 0) + 1) if in_top else 0
+
+    # ── Persist streaks to SQLite so server restarts don't reset them ────────
+    # Stored as a single JSON blob under a dedicated kv_store table.
+    # Non-fatal: if DB write fails the in-memory streaks still work for this session.
+    try:
+        _db_conn = get_db()
+        _db_conn.execute("""
+            CREATE TABLE IF NOT EXISTS kv_store (
+                key   TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            )
+        """)
+        _db_conn.execute(
+            "INSERT OR REPLACE INTO kv_store(key, value) VALUES ('coil_streak_days', ?)",
+            (_json.dumps(new_streaks),)
+        )
+        _db_conn.commit()
+    except Exception:
+        pass
+
+    # ── Atomic write: commit all computed results under STATE_LOCK ─────────
+    with STATE_LOCK:
+        st["cs_rs_5d"]        = cs_rs_5d
+        st["cs_rs_20d"]       = cs_rs_20d
+        st["cs_bb_squeeze"]   = cs_bb_squeeze
+        st["cs_vol_dryup"]    = cs_vol_dryup
+        st["cs_clv_accum"]    = cs_clv_accum
+        st["cs_vcp"]          = cs_vcp
+        st["coil_streak_days"]= new_streaks
+        if new_breadth_cache is not None:
+            st["breadth_cache"] = new_breadth_cache
+        if new_breadth_hist is not None:
+            st["breadth_hist"] = new_breadth_hist
+        st["sector_returns"]     = {**st.get("mkt", {}).get("sector_returns",     {}),
+                                     **{s: float(np.mean(v)) for s, v in r5a.items()}}
+        st["sector_returns_10d"] = {**st.get("mkt", {}).get("sector_returns_10d", {}),
+                                     **{s: float(np.mean(v)) for s, v in r10a.items()}}
 
 
 def _apply_coverage_score(df_out: pd.DataFrame) -> pd.DataFrame:
@@ -2518,6 +3521,25 @@ def _apply_coverage_score(df_out: pd.DataFrame) -> pd.DataFrame:
         return df_out
     scores = df_out["Score"].values.astype(float)
     df_out["score_percentile"] = (rankdata(scores, method="average") / max(len(scores), 1) * 100).round(1)
+
+    # ── PreMoveRank: composite rank for pre-move detection ──────────────
+    # Combines CoilingScore (compression quality), VCP (pattern maturity),
+    # CLVAccum (institutional buying), and CoilStreakDays (persistence).
+    # This is the column to sort by when hunting for tomorrow's breakout today.
+    if all(c in df_out.columns for c in ["CoilingScore", "VCP", "CLVAccum"]):
+        cs  = df_out["CoilingScore"].fillna(0).clip(0, 100) / 100.0
+        vcp = df_out["VCP"].fillna(0).clip(0, 10) / 10.0
+        clv = df_out["CLVAccum"].fillna(0).clip(0, 8) / 8.0
+        streak = df_out["CoilStreakDays"].fillna(0).clip(0, 20) / 20.0 if "CoilStreakDays" in df_out.columns else 0.0
+        prox = df_out["Proximity"].fillna(0).clip(0, 10) / 10.0 if "Proximity" in df_out.columns else 0.5
+        # Weighted composite: coiling quality 35%, VCP 25%, CLV 20%, proximity 15%, streak 5%
+        df_out["PreMoveRank"] = (
+            cs     * 0.35 +
+            vcp    * 0.25 +
+            clv    * 0.20 +
+            prox   * 0.15 +
+            streak * 0.05
+        ).round(4) * 100
     return df_out
 
 
@@ -2526,12 +3548,26 @@ def _apply_coverage_score(df_out: pd.DataFrame) -> pd.DataFrame:
 # ═════════════════════════════════════════════════════════════════
 
 def bootstrap_calibration_from_db(st: dict, db_path: pathlib.Path) -> None:
-    """Load per-stock and per-setup win rates from calibration DB into STATE on startup."""
+    """Load per-stock and per-setup win rates from calibration DB into STATE on startup.
+    Also restores coil_streak_days persisted from the last server session so streaks
+    survive restarts and are not reset to 0 every morning."""
+    cfg = SCORE_CFG
     try:
         con = sqlite3.connect(str(db_path))
         rows = con.cursor().execute(
             "SELECT symbol, score, forward_ret, setup FROM calibration ORDER BY ts ASC"
         ).fetchall()
+        # ── Restore persisted coil streaks ────────────────────────────────────
+        try:
+            kv = con.cursor().execute(
+                "SELECT value FROM kv_store WHERE key='coil_streak_days'"
+            ).fetchone()
+            if kv:
+                loaded_streaks = _json.loads(kv[0])
+                if isinstance(loaded_streaks, dict):
+                    st["coil_streak_days"] = {str(k): int(v) for k, v in loaded_streaks.items()}
+        except Exception:
+            pass   # kv_store table may not exist on first run — that's fine
         con.close()
     except Exception:
         return
@@ -2559,11 +3595,14 @@ def bootstrap_calibration_from_db(st: dict, db_path: pathlib.Path) -> None:
     # Per-setup win rate (requires ≥5 outcomes)
     sw = {s: float(np.clip(sw_h.get(s, 0) / sw_t[s], 0.30, 0.75))
           for s in sw_t if sw_t[s] >= 5}
-    st["_setup_winrate"] = sw   # e.g. {"Breakout": 0.54, "Pullback": 0.48}
+    st["_setup_winrate"] = sw   # e.g. {"Breakout": 0.54, "PB-EMA": 0.48}
+    # Calibration counts — used by Kelly gate (suppress Kelly below KELLY_MIN_CALIB_ROWS)
+    st["_setup_winrate_counts"] = dict(sw_t)
+    st["_stock_calib_counts"]   = dict(wr_t)
 
     if len(sv) >= 10:
-        bx = [sum(1 for s in sv[i:i+20] if s > 50) / max(len(sv[i:i+20]), 1)
-              for i in range(0, len(sv), 20)]
+        bx = [sum(1 for s in sv[i:i+cfg.CALIB_BREADTH_BATCH] if s > 50) / max(len(sv[i:i+cfg.CALIB_BREADTH_BATCH]), 1)
+              for i in range(0, len(sv), cfg.CALIB_BREADTH_BATCH)]
         st["breadth_hist"] = (st.get("breadth_hist", []) + bx)[-200:]
 
 
@@ -2572,11 +3611,17 @@ def run_extraction(targets_dict: dict, min_avg_vol: int) -> None:
     with STATE_LOCK:
         s = STATE["extraction_status"]
         s.update({"running": True, "done": 0, "total": len(targets_dict),
-                  "errors": 0, "rate_limited": 0, "log": []})
+                  "errors": 0, "rate_limited": 0, "empty": 0, "log": []})
         STATE["raw_data_cache"] = {}; STATE["score_cache"] = {}
         STATE["_row_stream_queue"] = []   # clear any leftover rows from previous run
         for k in ("cs_rs_5d","cs_rs_20d","cs_bb_squeeze","cs_vol_dryup","cs_clv_accum","cs_vcp"):
             STATE[k] = {}
+        # NOTE: coil_streak_days is intentionally NOT reset here.
+        # Streaks must persist across extraction runs so that a stock coiling for
+        # 3 consecutive days accumulates streak=3, not streak=1 on every run.
+        # compute_cs_ranks() reads prev_streaks from STATE at the end of each run
+        # and correctly increments / resets each symbol.  Wiping here meant every
+        # run started from 0, so the streak could never exceed 1.
         STATE["breadth_cache"] = None
 
     status   = STATE["extraction_status"]
@@ -2614,6 +3659,11 @@ def run_extraction(targets_dict: dict, min_avg_vol: int) -> None:
                     return sym, None, f"HTTP {r.status_code}"
                 raw = r.json().get("data", {}).get("candles", [])
                 if not raw:
+                    # Upstox silently returns HTTP 200 + empty candles[] when
+                    # rate-limited on the historical endpoint (instead of 429).
+                    # Treat it like a soft throttle and retry with backoff.
+                    if attempt < cfg.FETCH_RETRIES:
+                        time.sleep(delay); delay *= 2; continue
                     return sym, None, "empty"
                 df = pd.DataFrame(raw, columns=["time","open","high","low","close","volume","oi"])
                 df = to_ascending(df)
@@ -2636,11 +3686,12 @@ def run_extraction(targets_dict: dict, min_avg_vol: int) -> None:
             status["done"] += 1
             if err:
                 if "429" in str(err): status["rate_limited"] += 1
-                elif err not in ("empty",): status["errors"] += 1
+                elif err == "empty":  status["empty"] = status.get("empty", 0) + 1
+                else:                 status["errors"] += 1
                 continue
             if df is None: continue
             df_c = df[df["volume"] > 0].copy() if "volume" in df.columns else df.copy()
-            if len(df_c) < 30: continue
+            if len(df_c) < cfg.EXTRACT_MIN_BARS_PREFILTER: continue
             if min_avg_vol > 0 and len(df_c) >= 5:
                 if float(df_c["volume"].tail(20).mean()) < min_avg_vol:
                     continue
@@ -2730,6 +3781,19 @@ def refresh_live_prices_bg() -> None:
             STATE["raw_data_cache"][sym] = patch_live_bar(df, lq)
         STATE["live_quotes_cache"] = live
         STATE["last_live_refresh"]  = time.time()
+        # ── Partial cross-sectional RS recompute ───────────────────────────
+        # VCP, Darvas, and BB squeeze are expensive structural patterns that
+        # don't change meaningfully on a 1-minute price tick; we leave them
+        # in place.  5d/20d relative-strength ranks, however, shift with every
+        # price move and are cheap to recalculate (just returns + rankdata).
+        _r5r: dict = {}; _r20r: dict = {}
+        for _sym, _df in STATE["raw_data_cache"].items():
+            _c = _df["close"]
+            # Use iloc[-2] (yesterday) consistent with compute_cs_ranks fix
+            if len(_c) >= 7:  _r5r[_sym]  = float(_c.iloc[-2] / _c.iloc[-7]  - 1)
+            if len(_c) >= 22: _r20r[_sym] = float(_c.iloc[-2] / _c.iloc[-22] - 1)
+        if _r5r:  STATE["cs_rs_5d"]  = _cdf_rank_dict(_r5r)
+        if _r20r: STATE["cs_rs_20d"] = _cdf_rank_dict(_r20r)
         # Selective cache invalidation: evict entries where LTP moved >1% OR rsi_period changed.
         # The old approach wiped the entire score_cache, forcing a full VCP/Darvas/RS rescore
         # for all stocks on every price tick.  Indicators that don't depend on LTP (MA structure, VCP,
@@ -2817,6 +3881,14 @@ def init_db() -> None:
 init_db()
 bootstrap_calibration_from_db(STATE, DB_PATH)
 
+# Load full 2500-stock sector DB into memory (sector_map.db built by sector_db.py).
+# Must run before any extraction so get_sector() has full coverage immediately.
+_load_sector_db_cache()
+
+# Refresh live sector map from NSE indices in background — overwrites DB cache
+# entries for large-caps with the freshest classification.
+_maybe_refresh_sector_map()
+
 
 # ═════════════════════════════════════════════════════════════════
 # 17b. BACKGROUND LIVE-PRICE DAEMON
@@ -2859,6 +3931,63 @@ def save_snapshot(rows: list, universe: str) -> None:
         [(ts, universe, _json.dumps(row)) for row in rows]
     )
     conn.commit()
+
+
+# ═════════════════════════════════════════════════════════════════
+# 17c.  SECTOR DB API ROUTES
+# ═════════════════════════════════════════════════════════════════
+
+@app.get("/api/sector/coverage")
+async def sector_coverage():
+    """Coverage stats: total mapped, breakdown by sector and source."""
+    return _sector_get_stats()
+
+
+@app.get("/api/sector/all")
+async def sector_all():
+    """All symbol→sector mappings as a JSON list."""
+    return _sector_get_all()
+
+
+@app.get("/api/sector/lookup/{symbol}")
+async def sector_lookup(symbol: str):
+    """Look up the sector for a single symbol."""
+    sec = get_sector(symbol.upper())
+    return {"symbol": symbol.upper(), "sector": sec}
+
+
+@app.post("/api/sector/manual")
+async def sector_manual(body: dict):
+    """
+    Manually pin a symbol to a sector.  Manual pins are never overwritten
+    by auto-refresh or --build.
+
+    Body: {"symbol": "XYZ", "sector": "IT"}
+    """
+    sym    = (body.get("symbol") or "").strip().upper()
+    sector = (body.get("sector") or "").strip()
+    if not sym or not sector:
+        raise HTTPException(400, "symbol and sector are required")
+    _sector_manual_add(sym, sector)
+    _sector_reload_cache()    # refresh in-memory cache immediately
+    return {"symbol": sym, "sector": sector, "source": "manual"}
+
+
+@app.post("/api/sector/rebuild")
+async def sector_rebuild(background_tasks: BackgroundTasks):
+    """
+    Trigger a full sector DB rebuild in the background (fetches NSE index
+    constituents + master CSV).  Reloads the in-memory cache when done.
+    Returns immediately.
+    """
+    def _do_rebuild():
+        try:
+            _sector_build()
+            _sector_reload_cache()
+        except Exception as e:
+            print(f"[sector_rebuild] error: {e}")
+    background_tasks.add_task(_do_rebuild)
+    return {"status": "rebuild started"}
 
 
 # ═════════════════════════════════════════════════════════════════
@@ -2921,12 +4050,57 @@ async def token_status():
 async def auth_status_alias():
     return await token_status()
 
+
+def _get_nse_equity_df(master_df) -> "pd.DataFrame":
+    """
+    Return all tradeable NSE equity rows from the Upstox master instrument list.
+
+    The Upstox NSE master uses `instrument_type` as the NSE *series code*, NOT a
+    generic asset-class flag.  Filtering only on "EQ" captures the regular
+    large/mid-cap series (~488 stocks) but misses:
+
+        BE  — Trade-for-Trade / Z-category equities
+        BZ  — Z-series equities (low-compliance companies)
+        SM  — SME (NSE Emerge) equities
+        ST  — Odd-lot / suspended equities
+        IL  — Institutional placement series
+
+    All of these are plain NSE-listed equities with daily OHLCV bars available
+    from the Upstox historical-candle API.  Including them brings the universe
+    from ~488 up to the full ~2,500 NSE equity stocks.
+    """
+    _EQUITY_SERIES = {"EQ", "BE", "BZ", "SM", "ST", "IL"}
+    _NON_EQUITY    = {"INDEX", "MF", "UNITMF", "GB", "GS", "TB",
+                      "FUTIDX", "FUTSTK", "OPTIDX", "OPTSTK"}
+
+    nse = master_df[master_df["exchange"] == "NSE"].copy()
+
+    mask_include = nse["instrument_type"].isin(_EQUITY_SERIES)
+    mask_exclude = nse["instrument_type"].isin(_NON_EQUITY)
+
+    seg_str = nse["segment"].astype(str).str.upper()
+    mask_bad_seg = (
+        seg_str.str.contains("INDICES", na=False) |
+        seg_str.str.contains("FUTIDX|FUTSTK|OPTIDX|OPTSTK", na=False, regex=True)
+    )
+
+    eq = nse[mask_include & ~mask_exclude & ~mask_bad_seg].copy()
+
+    # Deduplicate: if the same trading_symbol appears in multiple series
+    # (e.g. both EQ and BE), prefer EQ > BE > others.
+    _SERIES_PREF = {"EQ": 0, "BE": 1, "BZ": 2, "SM": 3, "ST": 4, "IL": 5}
+    eq["_series_order"] = eq["instrument_type"].map(_SERIES_PREF).fillna(99).astype(int)
+    eq = (eq.sort_values("_series_order")
+            .drop_duplicates(subset=["trading_symbol"], keep="first")
+            .drop(columns=["_series_order"]))
+    return eq
+
 # ── Universe / Extract ────────────────────────────────────────────
 @app.get("/api/universe")
 async def get_universe(universe: str = "Nifty 50"):
     master_df = get_live_master()
     if master_df.empty: raise HTTPException(503, "Could not load instrument master")
-    eq = master_df[(master_df["exchange"] == "NSE") & (master_df["instrument_type"] == "EQ")]
+    eq = _get_nse_equity_df(master_df)
     if universe == "Nifty 50":
         df = eq[eq["trading_symbol"].isin(get_nifty50_live())]
     elif universe == "F&O Stocks":
@@ -2950,7 +4124,7 @@ async def start_extraction(body: dict, background_tasks: BackgroundTasks):
         return {"status": "already_running"}
     master_df = get_live_master()
     if master_df.empty: raise HTTPException(503, "Master list unavailable")
-    eq = master_df[(master_df["exchange"] == "NSE") & (master_df["instrument_type"] == "EQ")]
+    eq = _get_nse_equity_df(master_df)
     if universe == "Nifty 50":
         df = eq[eq["trading_symbol"].isin(get_nifty50_live())]
     elif universe == "F&O Stocks":
@@ -2972,8 +4146,12 @@ async def start_extraction(body: dict, background_tasks: BackgroundTasks):
 @app.get("/api/extraction/status")
 async def extraction_status():
     s = STATE["extraction_status"]
-    return {**s, "cached": len(STATE["raw_data_cache"]),
-            "live_quotes": len(STATE["live_quotes_cache"]),
+    cached = len(STATE["raw_data_cache"])
+    return {**s,
+            "cached":       cached,
+            "empty":        s.get("empty", 0),
+            "no_data":      s.get("done", 0) - cached - s.get("errors", 0) - s.get("rate_limited", 0),
+            "live_quotes":  len(STATE["live_quotes_cache"]),
             "last_refresh": STATE["last_live_refresh"]}
 
 
@@ -3005,7 +4183,7 @@ async def extraction_stream():
                 h = (payload["done"], payload["total"], payload["running"])
                 if h != last_status_hash:
                     last_status_hash = h
-                    yield f"event: status\ndata: {json.dumps(payload)}\n\n"
+                    yield f"event: status\ndata: {_json.dumps(payload)}\n\n"
 
                 # ── progressive row events ─────────────────────────
                 # Drain whatever has been queued by run_extraction and push
@@ -3018,9 +4196,9 @@ async def extraction_stream():
                     if evt == "rescore_complete":
                         # Tell the frontend the full-universe CS ranks are ready;
                         # it should call loadScreener() once to get definitive scores.
-                        yield f"event: rescore_complete\ndata: {{}}\n\n"
+                        yield "event: rescore_complete\ndata: {}\n\n"
                     else:
-                        yield f"event: row\ndata: {json.dumps(row, default=str)}\n\n"
+                        yield f"event: row\ndata: {_json.dumps(row, default=str)}\n\n"
 
                 # ── prices event when live quotes updated ──────────
                 cur_refresh = STATE["last_live_refresh"]
@@ -3046,7 +4224,7 @@ async def extraction_stream():
                             "vol": int(live["volume"]) if live.get("volume") else None,
                         }
                     if prices:
-                        yield f"event: prices\ndata: {json.dumps(prices)}\n\n"
+                        yield f"event: prices\ndata: {_json.dumps(prices)}\n\n"
 
                 await asyncio.sleep(0.3)   # tighter loop during extraction for snappier updates
             except asyncio.CancelledError:
@@ -3064,7 +4242,7 @@ async def extraction_stream():
     )
 
 @app.get("/api/screener")
-async def get_screener(sort_by: str = "CompositeRank", horizon: str = "ALL"):
+async def get_screener(sort_by: str = "CoilingScore", horizon: str = "ALL"):
     # Kick off a background live-price refresh without blocking the response.
     # refresh_live_prices_bg() is a blocking network call (fetch_live_quotes can
     # take 1-3 s); calling it inline was hanging every screener page load.
@@ -3081,9 +4259,20 @@ async def get_screener(sort_by: str = "CompositeRank", horizon: str = "ALL"):
     sc_snap   = dict(STATE["score_cache"])
     # Compute universe-wide BO saturation fraction from last score_cache pass.
     _cached_results = [v.get("result") for v in sc_snap.values() if v.get("result")]
-    _bo_count  = sum(1 for r in _cached_results if r.get("SetupType") == "Breakout")
+    _bo_count  = sum(1 for r in _cached_results if r.get("SetupType") in ("Breakout", "Coiling"))
     _tot_cache = max(len(_cached_results), 1)
     STATE["_bo_saturation_frac"] = _bo_count / _tot_cache
+
+    # Build a universe-wide EMI map from the previous score_cache pass so that
+    # aggregate_score can percentile-rank each stock's raw EMI and avoid
+    # systematically favouring the most volatile names.
+    _emi_universe: dict = {}
+    for _sym, _sc in sc_snap.items():
+        _res = _sc.get("result")
+        if _res and _res.get("EMI") is not None:
+            _emi_universe[_sym] = float(_res["EMI"])
+    # Inject into STATE so score_stock_dual → aggregate_score can read it via cs_state
+    STATE["_emi_universe"] = _emi_universe
 
     for sym, df_raw in raw_snap.items():
         try:
@@ -3160,6 +4349,76 @@ async def get_screener(sort_by: str = "CompositeRank", horizon: str = "ALL"):
 async def refresh_live(background_tasks: BackgroundTasks):
     background_tasks.add_task(refresh_live_prices_bg)
     return {"status": "refreshing"}
+
+
+@app.get("/api/premove")
+async def get_premove_candidates(min_coil: float = 55.0, min_vcp: float = 4.0,
+                                  min_streak: int = 0, limit: int = 30):
+    """
+    Pre-move watchlist: stocks in tight compression BEFORE the breakout.
+    Sorted by PreMoveRank (CoilingScore × VCP × CLV × Proximity composite).
+
+    Filters:
+      min_coil   — minimum CoilingScore (0-100). Default 55.
+      min_vcp    — minimum VCP score points (0-10). Default 4.
+      min_streak — minimum consecutive days in top-tier compression. Default 0.
+      limit      — max rows to return. Default 30.
+    """
+    mkt = STATE["mkt"] or get_market_context()
+    nifty_r5 = mkt.get("nifty_r5"); nifty_r20 = mkt.get("nifty_r20")
+    raw_snap = dict(STATE["raw_data_cache"])
+    lq_snap  = dict(STATE["live_quotes_cache"])
+    tgt_snap = dict(STATE["targets"])
+    sc_snap  = dict(STATE["score_cache"])
+    rows = []
+    for sym, df_raw in raw_snap.items():
+        try:
+            live     = lq_snap.get(normalize_key(tgt_snap.get(sym, "")), {})
+            ltp_now  = live.get("ltp") or float(df_raw["close"].iloc[-1])
+            cached_e = sc_snap.get(sym)
+            rsi_match = cached_e and cached_e.get("rsi_period") == STATE.get("rsi_period", 7)
+            ltp_match = cached_e and abs(cached_e.get("ltp", 0) - ltp_now) < 0.01 * ltp_now
+            if rsi_match and ltp_match and cached_e.get("result") is not None:
+                result = cached_e["result"]
+            else:
+                result = score_stock_dual(sym, df_raw, live, nifty_r5, nifty_r20)
+                if result:
+                    STATE["score_cache"][sym] = {
+                        "result": result, "ltp": ltp_now, "vol": 0,
+                        "rsi_period": STATE.get("rsi_period", 7),
+                    }
+            if result is None: continue
+            # Pre-move filter: must be in compression or pullback phase, not already broken out
+            if result.get("SetupType") not in ("Coiling", "PB-EMA", "PB-Dry", "PB-Deep", "Base"): continue
+            if (result.get("CoilingScore") or 0) < min_coil: continue
+            if (result.get("VCP") or 0) < min_vcp: continue
+            if (result.get("CoilStreakDays") or 0) < min_streak: continue
+            prev_close = float(df_raw["close"].iloc[-2]) if len(df_raw) >= 2 else ltp_now
+            day_chg = round((ltp_now - prev_close) / (prev_close + 1e-9) * 100, 2)
+            rows.append({
+                "Ticker": sym,
+                "LTP": round(float(ltp_now), 2),
+                "DayChg_pct": day_chg,
+                "LiveVol": int(live["volume"]) if live.get("volume") else None,
+                **result,
+            })
+        except Exception:
+            continue
+    if not rows:
+        return {"rows": [], "count": 0, "filters": {"min_coil": min_coil, "min_vcp": min_vcp, "min_streak": min_streak}}
+    df_out = pd.DataFrame(rows)
+    df_out = _apply_coverage_score(df_out)
+    # Sort by PreMoveRank if available, else CoilingScore
+    sort_col = "PreMoveRank" if "PreMoveRank" in df_out.columns else "CoilingScore"
+    df_out = df_out.sort_values(sort_col, ascending=False).head(limit).reset_index(drop=True)
+    df_out.insert(0, "Rank", df_out.index + 1)
+    df_out = df_out.replace({np.nan: None, np.inf: None, -np.inf: None})
+    return {
+        "rows": df_out.to_dict("records"),
+        "count": len(df_out),
+        "filters": {"min_coil": min_coil, "min_vcp": min_vcp, "min_streak": min_streak},
+        "regime": mkt.get("regime", "BULL"),
+    }
 
 @app.get("/api/config")
 async def get_config():
@@ -3273,7 +4532,7 @@ async def update_forward_returns():
             entry  = float(df_t.loc[idx, "close"])
             exit_p = float(df_t.loc[fi,  "close"])
             conn.execute("UPDATE calibration SET forward_ret=? WHERE id=?",
-                         (round((exit_p / entry - 1) * 100, 3), rec["id"]))
+                         (round(exit_p / entry - 1, 6), rec["id"]))
             updated += 1
     conn.commit()
 
@@ -3339,33 +4598,102 @@ async def remove_from_watchlist(symbol: str):
 async def get_news(symbol: str = ""):
     try:
         import feedparser, html as _html
+        from email.utils import parsedate_to_datetime
     except ImportError:
         return {"articles": [], "symbol": symbol, "error": "feedparser not installed"}
+
     feeds = [
         "https://economictimes.indiatimes.com/markets/stocks/rssfeeds/2146842.cms",
         "https://www.moneycontrol.com/rss/marketreports.xml",
     ]
+
+    # Build a match set for the symbol: the ticker itself plus any known
+    # long-form name aliases stored in the master instrument list.
+    # All matching is case-insensitive whole-word so "INFY" never matches "INFINITY".
+    import re as _re
+    _sym_upper = symbol.strip().upper()
+    _aliases: list[str] = [_sym_upper] if _sym_upper else []
+    if _sym_upper and _sym_upper in STATE.get("targets", {}):
+        # targets maps sym → upstox key; try to find long name in master cache
+        _master = STATE.get("master_cache", pd.DataFrame())
+        if not _master.empty and "trading_symbol" in _master.columns and "name" in _master.columns:
+            _rows = _master[_master["trading_symbol"] == _sym_upper]
+            if not _rows.empty:
+                _name = str(_rows.iloc[0].get("name", "")).strip()
+                if _name:
+                    # Add first word of name (e.g. "Infosys" from "Infosys Ltd")
+                    _aliases.append(_name.split()[0].upper())
+                    _aliases.append(_name.upper())
+
+    def _matches(text: str) -> bool:
+        if not _sym_upper:
+            return True   # no filter — return everything
+        t = text.upper()
+        return any(
+            _re.search(r'\b' + _re.escape(a) + r'\b', t)
+            for a in _aliases
+        )
+
+    # Articles older than NEWS_MAX_AGE_DAYS are discarded — derived from ScoreConfig.
+    _cutoff = datetime.now(timezone.utc) - timedelta(days=SCORE_CFG.NEWS_MAX_AGE_DAYS)
+
+    def _parse_pub(pub_str: str) -> Optional[datetime]:
+        if not pub_str:
+            return None
+        try:
+            dt = parsedate_to_datetime(pub_str)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return dt
+        except Exception:
+            try:
+                return datetime.fromisoformat(pub_str.replace("Z", "+00:00"))
+            except Exception:
+                return None
+
     arts = []
     for url in feeds:
         try:
-            for e in feedparser.parse(url).entries[:15]:
+            for e in feedparser.parse(url).entries[:25]:
                 title = _html.unescape(getattr(e, "title",   ""))
-                summ  = _html.unescape(getattr(e, "summary", ""))[:200]
+                summ  = _html.unescape(getattr(e, "summary", ""))[:300]
                 link  = getattr(e, "link",      "#")
                 pub   = getattr(e, "published", "")
-                if symbol and symbol.upper() not in (title + summ).upper(): continue
-                arts.append({"title": title, "summary": summ, "link": link,
-                              "pub": pub, "source": url.split("/")[2]})
+                # Date gate: skip articles outside the freshness window
+                _pub_dt = _parse_pub(pub)
+                if _pub_dt is not None and _pub_dt < _cutoff:
+                    continue
+                # Symbol match gate
+                if not _matches(title + " " + summ):
+                    continue
+                arts.append({
+                    "title":   title,
+                    "summary": summ,
+                    "link":    link,
+                    "pub":     pub,
+                    "pub_iso": _pub_dt.isoformat() if _pub_dt else None,
+                    "source":  url.split("/")[2],
+                })
         except Exception:
             pass
+
+    # Sort newest-first using parsed ISO date when available
+    arts.sort(key=lambda a: a.get("pub_iso") or "", reverse=True)
     return {"articles": arts[:30], "symbol": symbol}
 
 # ── Chart ─────────────────────────────────────────────────────────
 @app.get("/api/chart/{symbol}")
-async def get_chart_data(symbol: str):
+async def get_chart_data(symbol: str, bars: int = 0, tf: str = "1d"):
+    """Return OHLCV + indicators for charting.
+    bars=0  → return ALL available history (default).
+    bars=N  → return last N bars.
+    tf      → timeframe hint stored in response for client use.
+    """
     df = STATE["raw_data_cache"].get(symbol.upper())
     if df is None: raise HTTPException(404, f"{symbol} not in cache — run extraction first")
-    df = df.copy().tail(SCORE_CFG.CHART_BARS)
+    df = df.copy()
+    if bars and bars > 0:
+        df = df.tail(bars)
     df["time"] = pd.to_datetime(df["time"]).dt.strftime("%Y-%m-%d")
     c = df["close"]
     df["ema9"]  = c.ewm(span=9,  adjust=False).mean().round(2)
@@ -3384,7 +4712,7 @@ async def get_chart_data(symbol: str):
         df["vol_ma20"] = df["volume"].rolling(20).mean().round(0)
     df = df.replace({float("nan"): None, float("inf"): None, float("-inf"): None})
     cols = ["time","open","high","low","close","volume","ema9","ema20","ema50","atr","rsi","vol_ma20"]
-    return {"symbol": symbol.upper(), "bars": df[[c for c in cols if c in df.columns]].to_dict("records")}
+    return {"symbol": symbol.upper(), "tf": tf, "bars": df[[c for c in cols if c in df.columns]].to_dict("records")}
 
 # ── Explain ───────────────────────────────────────────────────────
 @app.get("/api/explain/{symbol}")
@@ -3400,10 +4728,11 @@ async def explain_score(symbol: str):
             cached = score_stock_dual(sym, df_raw, live, mkt.get("nifty_r5"), mkt.get("nifty_r20"))
             if cached:
                 ltp_now = live.get("ltp") or float(df_raw["close"].iloc[-1])
-                STATE["score_cache"][sym] = {
-                    "result": cached, "ltp": ltp_now, "vol": 0,
-                    "rsi_period": STATE.get("rsi_period", 7),
-                }
+                with STATE_LOCK:
+                    STATE["score_cache"][sym] = {
+                        "result": cached, "ltp": ltp_now, "vol": 0,
+                        "rsi_period": STATE.get("rsi_period", 7),
+                    }
         except Exception as e:
             raise HTTPException(500, f"Score computation failed: {e}")
     if not cached: raise HTTPException(404, "Score unavailable — insufficient data (need 60+ bars)")
@@ -3461,7 +4790,9 @@ async def explain_score(symbol: str):
     line("Target",        f"₹{_fv(s.get('Target'),2)}",       "Price target based on ATR multiples + structure",                "Exit here to realise the expected gain")
     line("Stop Loss",     f"₹{_fv(s.get('Stop'),2)}",         "Stop-loss level — setup is invalidated below this",              "Exit immediately if price closes below stop")
     line("Risk:Reward",   f"{_fv(s.get('RR'),2)}x",           "Reward ÷ Risk ratio",                                            ">2.0x acceptable; >3.0x excellent; <1.5x skip")
-    line("Kelly Size",    f"{round((s.get('KellyFrac',0) or 0)*100,1)}%", "Kelly criterion optimal position size",              "% of capital to risk; halve this for safety")
+    _kelly = s.get('KellyFrac')
+    _kelly_str = f"{round(_kelly * 100, 1)}%" if _kelly is not None else "— (insufficient calibration data)"
+    line("Kelly Size", _kelly_str, "Kelly criterion optimal position size", "% of capital to risk; halve this for safety")
     line("Move%",         f"{_fv(s.get('Move%'),1)}%",        "Expected % move from entry to target",                           "Higher move% with good RR = better opportunity")
     line("Patterns",      s.get("Patterns","—"),               "Candlestick patterns detected on latest bar",                    "Confirm entry with reversal or continuation candle")
 
@@ -3499,7 +4830,7 @@ def _fill_forward_returns_bg() -> int:
     raw_snap = dict(STATE.get("raw_data_cache",    {}))
     tgt_snap = dict(STATE.get("targets",           {}))
     for row in pending:
-        rid, sym, entry_score = row["id"], row["symbol"], row["score"]
+        rid, sym, _entry_score = row["id"], row["symbol"], row["score"]
         try:
             lq  = lq_snap.get(normalize_key(tgt_snap.get(sym, "")), {})
             ltp = lq.get("ltp")
@@ -3559,8 +4890,8 @@ async def calibration_snapshot(background_tasks: BackgroundTasks):
     # Fire the heavy scoring work in the background so the response returns instantly.
     # The old implementation ran score_stock_dual() for every stock synchronously,
     # which could block the request for 30+ seconds on a 500-stock universe.
-    import asyncio, concurrent.futures
-    loop = asyncio.get_event_loop()
+    import asyncio
+    loop = asyncio.get_running_loop()
     logged = await loop.run_in_executor(None, _calibration_snapshot_bg)
     return {"logged": logged}
 
@@ -3594,6 +4925,86 @@ async def export_snapshot_csv(ts: str):
     ts_safe = ts.replace(":", "-").replace(".", "-")[:19]
     return StreamingResponse(iter([buf.read()]), media_type="text/csv",
         headers={"Content-Disposition": f"attachment; filename=snapshot_{ts_safe}.csv"})
+
+
+# ═════════════════════════════════════════════════════════════════
+# 20.  BACKTEST ENDPOINT
+# ═════════════════════════════════════════════════════════════════
+
+@app.get("/api/backtest")
+async def backtest(
+    min_score: float = 60.0,
+    setup: str = "",
+    regime: str = "",
+    min_rows: int = 10,
+):
+    """Replay calibration DB rows with non-null forward_ret and return
+    hit-rate, avg forward return, Sharpe, and max drawdown for the given
+    score / setup / regime filter.  This turns the calibration DB into
+    actionable validation of score thresholds.
+
+    Query params:
+      min_score  – only rows with score >= this value  (default 60)
+      setup      – filter by SetupType e.g. 'Breakout' (default: all)
+      regime     – filter by regime e.g. 'BULL'        (default: all)
+      min_rows   – refuse analysis if fewer rows than this (default 10)
+    """
+    conn = get_db()
+    q    = "SELECT score, forward_ret, setup, regime FROM calibration WHERE forward_ret IS NOT NULL AND score >= ?"
+    args: list = [min_score]
+    if setup:
+        q += " AND setup = ?";  args.append(setup)
+    if regime:
+        q += " AND regime = ?"; args.append(regime)
+    rows = conn.execute(q, args).fetchall()
+
+    if len(rows) < min_rows:
+        return {"error": f"Only {len(rows)} rows match — need at least {min_rows} for meaningful analysis",
+                "rows_found": len(rows), "filter": {"min_score": min_score, "setup": setup, "regime": regime}}
+
+    fwd   = np.array([float(r["forward_ret"]) for r in rows])
+    scores = np.array([float(r["score"])       for r in rows])
+
+    hit_rate    = float((fwd > 0).mean())
+    avg_ret     = float(fwd.mean())
+    std_ret     = float(fwd.std()) if len(fwd) > 1 else 0.0
+    sharpe      = float(avg_ret / (std_ret + 1e-9) * np.sqrt(252 / SCORE_CFG.FORWARD_RETURN_DAYS))
+
+    # Max drawdown — sort descending (winners first) for a conservative
+    # worst-case path estimate.  True path-dependent DD requires a time-ordered
+    # portfolio equity curve which is not available from cross-sectional snapshots.
+    fwd_sorted = np.sort(fwd)[::-1]
+    cum   = np.cumprod(1 + fwd_sorted)
+    peak  = np.maximum.accumulate(cum)
+    dd    = (cum - peak) / (peak + 1e-9)
+    max_dd = float(dd.min())
+
+    # Score decile breakdown
+    decile_stats = []
+    for d in range(1, 11):
+        lo = float(np.percentile(scores, (d - 1) * 10))
+        hi = float(np.percentile(scores, d * 10))
+        mask = (scores >= lo) & (scores <= hi)
+        if mask.sum() >= 3:
+            decile_stats.append({
+                "decile": d, "score_range": [round(lo, 1), round(hi, 1)],
+                "n": int(mask.sum()),
+                "hit_rate": round(float((fwd[mask] > 0).mean()), 3),
+                "avg_fwd_ret": round(float(fwd[mask].mean()), 4),
+            })
+
+    return {
+        "filter":   {"min_score": min_score, "setup": setup or "all", "regime": regime or "all"},
+        "n_rows":   len(rows),
+        "hit_rate": round(hit_rate, 3),
+        "avg_fwd_ret_pct": round(avg_ret * 100, 2),
+        "sharpe":   round(sharpe, 3),
+        "max_drawdown_pct": round(max_dd * 100, 2),
+        "forward_return_days": SCORE_CFG.FORWARD_RETURN_DAYS,
+        "decile_breakdown": decile_stats,
+        "note": ("BreakoutProb is NOT a calibrated probability. "
+                 "Use this endpoint's hit_rate per decile to validate score thresholds."),
+    }
 
 
 # ═════════════════════════════════════════════════════════════════
