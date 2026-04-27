@@ -285,7 +285,7 @@ tr.row-updated td { color: var(--green2) !important; animation: none; }
           <option value="14">14</option>
         </select>
         <span class="sidebar-label">Min Avg Volume</span>
-        <input class="ctrl-input" id="minVol" type="number" value="100000" step="50000">
+        <input class="ctrl-input" id="minVol" type="number" value="0" step="10000">
         <label style="display:flex;align-items:center;gap:6px;font-size:.59rem;color:var(--muted);margin-bottom:7px">
           <input type="checkbox" id="sectorCap"> Sector Cap (1 per sector)
         </label>
@@ -343,9 +343,11 @@ tr.row-updated td { color: var(--green2) !important; animation: none; }
         <select class="filter-select" id="sortSelect" onchange="applyClientSort()">
           <option value="CompositeRank">Composite Rank</option>
           <option value="Score">Score</option>
+          <option value="CoilingScore">Coiling Score ★</option>
+          <option value="CoilStreakDays">Coil Streak</option>
           <option value="EMI">EMI</option>
           <option value="RS">RS</option>
-          <option value="BreakoutProb">BO Prob</option>
+          <option value="CompressionScore">Compression Score</option>
           <option value="VCP">VCP</option>
           <option value="BBSqueeze">BB Squeeze</option>
           <option value="VolDryUp">Vol Dry-up</option>
@@ -365,7 +367,11 @@ tr.row-updated td { color: var(--green2) !important; animation: none; }
         <select class="filter-select" id="setupFilter" onchange="applyFilters()">
           <option value="">All</option>
           <option value="Breakout">Breakout</option>
-          <option value="Pullback">Pullback</option>
+          <option value="Coiling">Coiling ★</option>
+          <option value="PB-EMA">PB-EMA (at support)</option>
+          <option value="PB-Dry">PB-Dry (vol drying)</option>
+          <option value="PB-Deep">PB-Deep (correcting)</option>
+          <option value="Base">Base (no signal)</option>
           <option value="Reversal">Reversal</option>
         </select>
         <span class="results-count" id="visibleCount"></span>
@@ -379,6 +385,7 @@ tr.row-updated td { color: var(--green2) !important; animation: none; }
         <button class="view-tab active" onclick="switchView('core')">◼ Core</button>
         <button class="view-tab" onclick="switchView('trade')">◈ Trade</button>
         <button class="view-tab" onclick="switchView('factor')">⬡ Factors</button>
+        <button class="view-tab" onclick="switchView('coiling')" style="color:var(--green)">◎ Coiling</button>
       </div>
 
       <!-- Table (columns change per view) -->
@@ -446,9 +453,9 @@ tr.row-updated td { color: var(--green2) !important; animation: none; }
 // defined here. Change once, updates everywhere.
 // ════════════════════════════════════════════════════
 const THRESH = {
-  RSI_OVERBOUGHT:   70,   // RSI ≥ this → red (overbought)
-  RSI_HIGH:         60,   // RSI ≥ this → amber (elevated)
-  RSI_OVERSOLD:     35,   // RSI ≤ this → blue (oversold)
+  RSI_OVERBOUGHT:   80,   // RSI ≥ this → red  (mirrors backend RSI_OB_FALLBACK)
+  RSI_HIGH:         65,   // RSI ≥ this → amber (elevated)
+  RSI_OVERSOLD:     42,   // RSI ≤ this → blue  (mirrors backend RSI_OS_FALLBACK)
   VOL_RATIO_HIGH:   1.5,  // VolRatio ≥ this → green
   VOL_RATIO_MID:    1.0,  // VolRatio ≥ this → amber
   VOL_Z_SURGE:       3,   // VolZ ≥ this → bright green
@@ -467,6 +474,23 @@ const THRESH = {
   PENALTY_MID:       4,   // SoftPenalty > this → amber
   RR_PREMIUM:     1.25,   // rrFmt: ratio vs median for green (25% above)
   RR_DISCOUNT:    0.85,   // rrFmt: ratio vs median for amber (15% below)
+  // Factor bar fill thresholds — used in barFmt() and factor tiles
+  BAR_PCT_HIGH:     60,   // pct of max ≥ this → green
+  BAR_PCT_MID:      30,   // pct of max ≥ this → amber (else red)
+  // Overview panel direct comparisons (mirror backend ScoreConfig)
+  OVERVIEW_PENALTY_HIGH: 5,  // SoftPenalty > this → red in overview tile
+  OVERVIEW_BO_PROB_HIGH: 0.6,// BreakoutProb > this → green in overview tile
+};
+
+// ── UI timing / retry constants ───────────────────────────────────
+const UI_CFG = {
+  SSE_RECONNECT_BASE_MS:  3_000,  // initial SSE reconnect wait
+  SSE_RECONNECT_MAX_MS:  60_000,  // cap on exponential backoff
+  SSE_RECONNECT_FACTOR:      2,   // backoff multiplier per attempt
+  LIVE_REFRESH_MAX_ATTEMPTS: 15,  // max poll attempts after refreshLive
+  LIVE_POLL_INTERVAL_MS:  1_000,  // ms between each poll attempt
+  FLASH_CLEAR_MS:         6_000,  // ms before flash messages auto-clear
+  RENDER_THROTTLE_MS:       200,  // progressive row render throttle
 };
 
 
@@ -515,7 +539,8 @@ const COLS = {
   RS_Accel:    { label:'RS Acc',    fmt: r => fv(r.RS_Accel,2),                            align:'R' },
   AccelScore:  { label:'Accel%',    fmt: r => `${fv(r.AccelScore,1)}%`,                    align:'R' },
   // Breakout metrics
-  BreakoutProb:{ label:'BO%',        fmt: r => boPctFmt(r.BreakoutProb),                   align:'R' },
+  BreakoutProb:     { label:'Compress%', fmt: r => boPctFmt(r.CompressionScore ?? r.BreakoutProb), align:'R' },
+  CompressionScore: { label:'Compress%', fmt: r => boPctFmt(r.CompressionScore ?? r.BreakoutProb), align:'R' },
   SignalPersist:{ label:'SigCov',    fmt: r => r.SignalPersist != null ? `${fv(r.SignalPersist*100,0)}%` : '—', align:'R' },
   // Volume
   VolRatio:    { label:'VolRat',    fmt: r => volRatFmt(r.VolRatio),                       align:'R' },
@@ -540,6 +565,14 @@ const COLS = {
   VCP:         { label:'VCP',        fmt: r => barFmt(r.VCP, 10),                          align:'R' },
   SpreadPts:   { label:'Spread',    fmt: r => barFmt(r.SpreadPts, 11),                     align:'R' },
   Coil:        { label:'Coil',       fmt: r => barFmt(r.Coil, 10),                         align:'R' },
+  CoilingScore:{ label:'CoilScore',  fmt: r => {
+    if (r.CoilingScore == null) return '—';
+    const v = parseFloat(r.CoilingScore);
+    const c = v >= 70 ? 'var(--green2)' : v >= 55 ? 'var(--green)' : v >= 40 ? 'var(--amber)' : 'var(--dim)';
+    const streak = r.CoilStreakDays >= 3 ? `<span style="color:var(--cyan);font-size:.52rem"> ${r.CoilStreakDays}d</span>` : '';
+    return `<span style="color:${c};font-weight:700">${fv(v,0)}</span>${streak}`;
+  }, align:'R' },
+  CoilStreakDays:{ label:'Streak',   fmt: r => r.CoilStreakDays > 0 ? `<span style="color:var(--cyan)">${r.CoilStreakDays}d</span>` : '—', align:'R' },
   MA_Struct:   { label:'MA',         fmt: r => barFmt(r.MA_Struct, 10),                    align:'R' },
   Proximity:   { label:'Prox',       fmt: r => barFmt(r.Proximity, 10),                    align:'R' },
   ATR_Pot:     { label:'ATRPot',    fmt: r => barFmt(r.ATR_Pot, 5),                        align:'R' },
@@ -583,7 +616,6 @@ const COLS = {
 };
 
 // ── VIEW COLUMN SETS ─────────────────────────────────────────────
-// Mirrors the screener's CORE_COLS, TRADE_COLS, FACTOR_COLS exactly.
 const VIEW_COLS = {
   core: [
     'Rank','Ticker','Sector','SetupType','Horizon','Score','EMI','CompositeRank',
@@ -612,6 +644,17 @@ const VIEW_COLS = {
     'AboveSMA200','Pos52W','EMA9','EMA20','DarvasInBox',
     'RS_Accel','AccelScore',
     'Sweep','VWMA20_OK','Patterns',
+  ],
+  // ── Coiling view: ranked purely by pre-move compression quality ───
+  // Shows CoilingScore first so you can sort by it and find the best
+  // coiling setups BEFORE volume confirms — not after.
+  coiling: [
+    'Rank','Ticker','Sector','SetupType','CoilingScore','CoilStreakDays',
+    'Horizon','Score','LTP','ATR%',
+    'BBSqueeze','VolDryUp','CLVAccum','VCP','VCP_Detected',
+    'Coil','SpreadPts','VolCont','BreakoutProb',
+    'RS','RS_Sector','MA_Struct','Proximity',
+    'Entry','Stop','RR','HorizonNote',
   ],
 };
 
@@ -720,12 +763,20 @@ function stabFmt(v) {
 function barFmt(v, max) {
   if (v == null) return '—';
   const pct = Math.min((parseFloat(v) / max) * 100, 100);
-  const c = pct >= 60 ? 'var(--green)' : pct >= 30 ? 'var(--amber)' : 'var(--red)';
+  const c = pct >= THRESH.BAR_PCT_HIGH ? 'var(--green)' : pct >= THRESH.BAR_PCT_MID ? 'var(--amber)' : 'var(--red)';
   return `<span style="color:${c}">${fv(v,1)}</span><span style="color:var(--dim);font-size:.54rem">/${max}</span>`;
 }
 function setupBadge(v) {
   if (!v) return '—';
-  const map = { Breakout:'var(--blue)', Pullback:'var(--purple)', Reversal:'var(--amber)' };
+  const map = {
+    Breakout:  'var(--blue)',
+    Coiling:   'var(--green)',    // pre-move compression
+    'PB-EMA':  'var(--cyan)',     // at EMA support — highest-quality pullback
+    'PB-Dry':  'var(--purple)',   // vol drying, deeper correction
+    'PB-Deep': 'var(--amber)',    // still correcting, not at support
+    Base:      'var(--dim)',      // range-bound, no signal
+    Reversal:  'var(--amber2)',
+  };
   return `<span style="color:${map[v]||'var(--muted)'};font-size:.58rem;font-weight:700">${v}</span>`;
 }
 function horizonBadge(v) {
@@ -746,6 +797,12 @@ function tickerCell(r) {
     r.DarvasInBox  ? '<span class="tag tag-bo">BO</span>'   : '',
     r.OI_Buildup > 0 ? '<span class="tag tag-oi">OI</span>' : '',
     r.Sweep        ? '<span class="tag tag-rev">SW</span>'  : '',
+    // Coiling tag: green if setup is Coiling OR CoilingScore ≥ 65
+    (r.SetupType === 'Coiling' || (r.CoilingScore != null && r.CoilingScore >= 65))
+      ? '<span class="tag tag-vcp" style="background:#001a00;color:var(--green2)">COIL</span>' : '',
+    // VolClimax: red exhaustion warning — not a buy signal
+    r.VolClimax
+      ? '<span class="tag" style="background:#1a0000;color:var(--red);border:1px solid var(--red)">CLMX</span>' : '',
   ].join('');
   return `<span class="ticker-cell" data-ticker="${(r.Ticker||'').replace(/"/g,'')}">${r.Ticker}${tags}</span>`;
 }
@@ -756,6 +813,8 @@ function signalDots(r) {
     { t:'CLVAccum',     v: r.CLVAccum  > 0 },
     { t:'RSDivergence', v: r.RSDivergence > 0 },
     { t:'VCP_Detected', v: r.VCP_Detected },
+    { t:'Coiling',      v: r.SetupType === 'Coiling' || (r.CoilingScore != null && r.CoilingScore >= 58) },
+    { t:'VolClimax ⚠',  v: !r.VolClimax },   // green = NOT in climax; red = climax warning
   ].map(d => `<span class="sig ${d.v ? 'sig-g' : 'sig-n'}" title="${d.t}"></span>`).join('');
 }
 
@@ -767,13 +826,19 @@ async function startExtraction() {
   btn.disabled = true; btn.textContent = '⟳ Extracting…';
   document.getElementById('statusText').textContent = 'Starting…';
   STATE_extraction_running = true;
+  const universe = document.getElementById('universeSelect').value;
+  // For NSE All (~2500 stocks), override min_avg_vol to 0 so no stocks are
+  // pre-filtered out during extraction. Illiquid stocks still get low scores
+  // via the liquidity_sc sigmoid — they just appear in the screener.
+  let minVol = parseInt(document.getElementById('minVol').value) || 0;
+  if (universe === 'NSE All') minVol = 0;
   try {
     const d = await fetch('/api/extract', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        universe:           document.getElementById('universeSelect').value,
+        universe:           universe,
         rsi_period:         parseInt(document.getElementById('rsiPeriod').value),
-        min_avg_vol:        parseInt(document.getElementById('minVol').value),
+        min_avg_vol:        minVol,
         sector_cap_enabled: document.getElementById('sectorCap').checked,
       })
     }).then(r => r.json());
@@ -795,6 +860,8 @@ function startPolling() {
 
 // ── SSE connection ────────────────────────────────────────────────
 let _sse = null;
+let _sseReconnectMs = UI_CFG.SSE_RECONNECT_BASE_MS;  // grows on each failed attempt
+
 function _startSSE() {
   if (_sse) { _sse.close(); _sse = null; }
   const dot = document.getElementById('sseDot');
@@ -804,6 +871,7 @@ function _startSSE() {
 
   _sse.addEventListener('open', () => {
     if (dot) dot.className = 'sse-dot live';
+    _sseReconnectMs = UI_CFG.SSE_RECONNECT_BASE_MS;  // reset backoff on success
   });
 
   _sse.addEventListener('status', e => {
@@ -860,13 +928,13 @@ function _startSSE() {
   _sse.addEventListener('error', () => {
     if (dot) dot.className = 'sse-dot error';
     _sse.close(); _sse = null;
-    // Graceful fallback: only start interval polling if extraction is actually running
-    // — no point hammering the server when we just need live prices via SSE
+    // Exponential backoff: double the wait each failure, capped at SSE_RECONNECT_MAX_MS
+    const reconnectIn = _sseReconnectMs;
+    _sseReconnectMs = Math.min(_sseReconnectMs * UI_CFG.SSE_RECONNECT_FACTOR, UI_CFG.SSE_RECONNECT_MAX_MS);
     setTimeout(() => {
       if (!_pollInterval && STATE_extraction_running) _startIntervalPoll();
-      // Try to reconnect SSE after a backoff
-      setTimeout(_startSSE, 15_000);
-    }, 3000);
+      setTimeout(_startSSE, reconnectIn);
+    }, UI_CFG.SSE_RECONNECT_BASE_MS);
   });
 }
 
@@ -879,7 +947,7 @@ function _startIntervalPoll() {
       const s = await fetch('/api/extraction/status').then(r => r.json());
       _handleExtractionStatus(s);
     } catch(e) {}
-  }, 2000);
+  }, UI_CFG.LIVE_POLL_INTERVAL_MS);
 }
 
 function _handleExtractionStatus(s) {
@@ -892,8 +960,8 @@ function _handleExtractionStatus(s) {
   const statusEl = document.getElementById('statusText');
   const dotEl    = document.getElementById('sseDot');
   const txt = s.running
-    ? `${s.done}/${s.total} · ${s.errors} err · ${s.rate_limited} RL `
-    : `Done: ${s.done}/${s.total} `;
+    ? `${s.done}/${s.total} · ${s.errors} err · ${s.rate_limited} RL · ${s.empty||0} empty `
+    : `Done: ${s.done}/${s.total} · cached: ${s.cached||0} · empty: ${s.empty||0} `;
   // Remove only text nodes, keeping the dot element intact
   Array.from(statusEl.childNodes).forEach(n => { if (n.nodeType === Node.TEXT_NODE) n.remove(); });
   statusEl.insertBefore(document.createTextNode(txt), dotEl || null);
@@ -971,7 +1039,7 @@ async function refreshLive() {
           if (btn) { btn.disabled = false; btn.textContent = '↺ Refresh Live Prices'; }
         }
       } catch(_) {}
-      if (++attempts > 15) {
+      if (++attempts > UI_CFG.LIVE_REFRESH_MAX_ATTEMPTS) {
         clearInterval(poll);
         loadScreener();
         if (btn) { btn.disabled = false; btn.textContent = '↺ Refresh Live Prices'; }
@@ -1058,7 +1126,7 @@ document.getElementById('sectorPills').addEventListener('click', e => {
 });
 function filterSector(s) {
   _sectorFilter = s;
-  document.querySelectorAll('.sector-pill').forEach(p => p.classList.toggle('active', p.textContent === (s || 'ALL')));
+  document.querySelectorAll('.sector-pill').forEach(p => p.classList.toggle('active', p.dataset.sector === s));
   applyFilters();
 }
 function applyFilters() {
@@ -1099,7 +1167,7 @@ function _scheduleRender() {
     renderPills();
     // Update counts
     document.getElementById('rowCount').textContent = `(${_rows.length} total)`;
-  }, 200);
+  }, UI_CFG.RENDER_THROTTLE_MS);
 }
 
 // ════════════════════════════════════════════════════
@@ -1126,7 +1194,19 @@ function applyClientSort() {
 // ════════════════════════════════════════════════════
 function switchView(name) {
   _currentView = name;
-  document.querySelectorAll('.view-tab').forEach((t, i) => t.classList.toggle('active', ['core','trade','factor'][i] === name));
+  const tabNames = ['core','trade','factor','coiling'];
+  document.querySelectorAll('.view-tab').forEach((t, i) =>
+    t.classList.toggle('active', tabNames[i] === name));
+  // When switching to Coiling view, auto-sort by CoilingScore so the
+  // best pre-move setups surface immediately without manual sort change.
+  if (name === 'coiling') {
+    const sel = document.getElementById('sortSelect');
+    if (sel && sel.value !== 'CoilingScore') {
+      sel.value = 'CoilingScore';
+      applyClientSort();
+      return; // applyClientSort calls applyFilters → renderTable
+    }
+  }
   renderTable(_filteredRows);
 }
 
@@ -1187,10 +1267,14 @@ async function openStock(ticker) {
   _chartLoaded = _newsLoaded = _wlLoaded = _calibLoaded = false;
   document.getElementById('modalTitle').textContent = ticker;
   document.getElementById('modalMeta').textContent = 'Loading…';
+  const _tEnc = encodeURIComponent(ticker);
   document.getElementById('quickLinks').innerHTML = `
-    <a class="quick-link" href="/fundamentals?sym=${ticker}" target="_blank">📊 Fundamentals</a>
-    <a class="quick-link" href="/options" onclick="sessionStorage.setItem('prefill_sym','${ticker}')">⚙ Options</a>
-    <a class="quick-link" href="/ml" onclick="sessionStorage.setItem('prefill_sym','${ticker}')">🤖 ML</a>`;
+    <a class="quick-link" href="/fundamentals?sym=${_tEnc}" target="_blank">📊 Fundamentals</a>
+    <a class="quick-link" href="/options" data-prefill="${ticker.replace(/"/g,'&quot;')}">⚙ Options</a>
+    <a class="quick-link" href="/ml" data-prefill="${ticker.replace(/"/g,'&quot;')}">🤖 ML</a>`;
+  document.getElementById('quickLinks').querySelectorAll('[data-prefill]').forEach(a => {
+    a.addEventListener('click', () => sessionStorage.setItem('prefill_sym', a.dataset.prefill));
+  });
   switchTab('overview');
   ['overviewContent','explainContent','tradeContent','watchlistContent','calibContent']
     .forEach(id => document.getElementById(id).innerHTML = '<div class="empty-state"><span class="spinner"></span></div>');
@@ -1242,12 +1326,17 @@ function renderOverview(r) {
     ['Score',        fv(r.Score,1),                                    sc(r.Score)],
     ['EMI',          fv(r.EMI,3),                                      ''],
     ['Composite Rk', fv(r.CompositeRank,4),                            ''],
-    ['Setup',        r.SetupType||'—',                                 'var(--amber2)'],
+    ['Setup',        r.SetupType||'—',  ({'Breakout':'var(--blue)','Coiling':'var(--green)','PB-EMA':'var(--cyan)','PB-Dry':'var(--purple)','PB-Deep':'var(--amber)','Base':'var(--dim)','Reversal':'var(--amber2)'})[r.SetupType] || 'var(--muted)'],
+    // CoilingScore — shown prominently; coloured green when strong, amber when building
+    ['Coiling Score',r.CoilingScore!=null?fv(r.CoilingScore,0)+'/100':'—',
+      r.CoilingScore>=70?'var(--green2)':r.CoilingScore>=55?'var(--green)':r.CoilingScore>=40?'var(--amber)':'var(--dim)'],
+    ['Coil Streak',  r.CoilStreakDays>0?r.CoilStreakDays+'d':'—',      r.CoilStreakDays>=3?'var(--cyan)':'var(--dim)'],
     ['Horizon',      r.Horizon||'—',                                   'var(--amber2)'],
-    ['RSI',          fv(r.RSI7,1),                                     r.RSI7>70?'var(--red)':r.RSI7<35?'var(--blue)':''],
+    ['RSI',          fv(r.RSI7,1),                                     r.RSI7>THRESH.RSI_OVERBOUGHT?'var(--red)':r.RSI7<THRESH.RSI_OVERSOLD?'var(--blue)':''],
     ['ATR%',         r['ATR%']!=null?fv(r['ATR%'],2)+'%':'—',         ''],
     ['Vol Ratio',    fv(r.VolRatio,2)+'x',                            r.VolRatio>1.5?'var(--green)':''],
-    ['BO Prob',      r.BreakoutProb!=null?fv(r.BreakoutProb*100,1)+'%':'—', r.BreakoutProb>0.6?'var(--green)':''],
+    ['Compress',     r.CompressionScore!=null?fv((r.CompressionScore??r.BreakoutProb)*100,1)+'%':'—', (r.CompressionScore??r.BreakoutProb)>THRESH.OVERVIEW_BO_PROB_HIGH?'var(--green)':''],
+    ['VolClimax',    r.VolClimax ? '⚠ EXHAUSTION' : 'No',  r.VolClimax ? 'var(--red)' : ''],
     ['VCP Detect',   r.VCP_Detected?'YES':'NO',                        r.VCP_Detected?'var(--green)':'var(--dim)'],
     ['VCP Pullbks',  r.VCP_Pullbacks??'—',                             ''],
     ['VCP Contrac',  fv(r.VCP_Contraction,3),                          ''],
@@ -1268,7 +1357,7 @@ function renderOverview(r) {
     ['ATR Exp',      fv(r.ATRExpOnset,1),                              ''],
     ['Sweep',        r.Sweep?'YES':'—',                                 r.Sweep?'var(--cyan)':'var(--dim)'],
     ['VWAP↑',        r.VWMA20_OK?'YES':'—',                           r.VWMA20_OK?'var(--green)':'var(--dim)'],
-    ['Soft Penalty', '-'+fv(r.SoftPenalty,1),                          r.SoftPenalty>5?'var(--red)':'var(--muted)'],
+    ['Soft Penalty', '-'+fv(r.SoftPenalty,1),                          r.SoftPenalty>THRESH.PENALTY_HIGH?'var(--red)':'var(--muted)'],
     ['Liquidity',    r.LiquidityScore!=null?fv(r.LiquidityScore,3):'—',''],
     ['ADV',          r.ADVTurnover!=null?'₹'+fv(r.ADVTurnover,1)+'Cr':'—',''],
     ['Horizon Note', r.HorizonNote||'—',                               'var(--muted)'],
@@ -1288,7 +1377,7 @@ function renderOverview(r) {
     <div class="factor-grid">
       ${factorDefs.map(([lbl, val, max]) => {
         const pct = val != null ? Math.min((val / max) * 100, 100) : 0;
-        const c = pct >= 60 ? 'var(--green)' : pct >= 30 ? 'var(--amber)' : 'var(--red)';
+        const c = pct >= THRESH.BAR_PCT_HIGH ? 'var(--green)' : pct >= THRESH.BAR_PCT_MID ? 'var(--amber)' : 'var(--red)';
         return `<div class="factor-tile">
           <div class="factor-tile-label">${lbl}</div>
           <div class="factor-tile-val" style="color:${c}">${val != null ? fv(val,1) : '—'}<span style="color:var(--dim);font-size:.52rem">/${max}</span></div>
@@ -1369,89 +1458,232 @@ function renderExplain(d) {
     </table></div>`;
 }
 
-// ── CHART ─────────────────────────────────────────────────────────
+// ── CHART (full history + timeframe selector + news markers) ────────
+let _chartTF = '1d';           // active timeframe
+let _chartAllBars = [];        // ALL bars from server for the active TF
+let _chartNewsArts = [];       // news articles for the current stock
+let _chartNewsTicker = null;
+
+// Timeframe → how many daily bars to display (0 = all)
+const TF_BARS = { '5d':5, '15d':15, '1mo':22, '3mo':66, '6mo':132, '1y':252, 'all':0 };
+
 async function loadChart(ticker) {
-  document.getElementById('chartContent').innerHTML = '<div class="empty-state"><span class="spinner"></span> Loading…</div>';
+  _chartTF = '1d';
+  _chartNewsTicker = ticker;
+  document.getElementById('chartContent').innerHTML = `
+    <div id="chartToolbar" style="display:flex;gap:5px;align-items:center;flex-wrap:wrap;margin-bottom:8px">
+      <span style="color:var(--muted);font-size:.57rem;letter-spacing:.08em;text-transform:uppercase;margin-right:4px">Range:</span>
+      ${Object.keys(TF_BARS).map(tf => `<button class="chart-tf-btn${tf==='all'?' active':''}" data-tf="${tf}" onclick="setChartTF('${tf}')">${tf.toUpperCase()}</button>`).join('')}
+      <span style="margin-left:auto;display:flex;align-items:center;gap:6px">
+        <label style="font-size:.57rem;color:var(--muted);cursor:pointer;display:flex;align-items:center;gap:3px">
+          <input type="checkbox" id="chartNewsToggle" checked onchange="renderChartFromCache()" style="accent-color:var(--amber)"> News markers
+        </label>
+      </span>
+    </div>
+    <div id="chartBody"><div class="empty-state"><span class="spinner"></span> Loading…</div></div>`;
+  // Inject TF button styles once
+  if (!document.getElementById('chartTFStyle')) {
+    const s = document.createElement('style');
+    s.id = 'chartTFStyle';
+    s.textContent = `.chart-tf-btn{background:transparent;border:1px solid #1e1e1e;color:var(--muted);font-family:var(--mono);font-size:.57rem;padding:3px 8px;cursor:pointer;transition:border-color .12s,color .12s,background .12s}.chart-tf-btn:hover{border-color:var(--amber2);color:var(--amber2)}.chart-tf-btn.active{border-color:var(--amber);color:var(--amber);background:#140e00}`;
+    document.head.appendChild(s);
+  }
   try {
-    const d = await fetch(`/api/chart/${ticker}`).then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); });
-    renderChart(d);
+    const [chartData, newsData] = await Promise.all([
+      fetch(`/api/chart/${ticker}?bars=0`).then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); }),
+      fetch(`/api/news?symbol=${encodeURIComponent(ticker)}`).then(r => r.json()).catch(() => ({ articles: [] }))
+    ]);
+    _chartAllBars  = chartData.bars || [];
+    _chartNewsArts = (newsData.articles || []).filter(a => a.pub);
+    renderChartFromCache();
   } catch(e) {
-    document.getElementById('chartContent').innerHTML =
+    document.getElementById('chartBody').innerHTML =
       `<div class="empty-state" style="color:var(--red)">Chart error: ${e.message}<br><small style="color:var(--muted)">Run extraction first.</small></div>`;
   }
 }
-function renderChart(d) {
-  const bars = d.bars || [];
-  if (!bars.length) { document.getElementById('chartContent').innerHTML = '<div class="empty-state">No chart data.</div>'; return; }
 
-  // Proportional layout — no fixed pixel heights hardcoded for data logic.
-  const W = 900, H = 290, VHGT = 60, PAD = { l:52, r:24, t:12, b:22 };
+function setChartTF(tf) {
+  _chartTF = tf;
+  document.querySelectorAll('.chart-tf-btn').forEach(b => b.classList.toggle('active', b.dataset.tf === tf));
+  renderChartFromCache();
+}
+
+function renderChartFromCache() {
+  const barsLimit = TF_BARS[_chartTF] || 0;
+  const bars = barsLimit > 0 ? _chartAllBars.slice(-barsLimit) : _chartAllBars;
+  const showNews = document.getElementById('chartNewsToggle')?.checked ?? true;
+  renderChart({ bars, symbol: _chartNewsTicker }, showNews ? _chartNewsArts : []);
+}
+
+function renderChart(d, newsArts) {
+  const bars = d.bars || [];
+  if (!bars.length) { document.getElementById('chartBody').innerHTML = '<div class="empty-state">No chart data.</div>'; return; }
+
+  const W = 960, H = 300, RSI_H = 60, VHGT = 55, PAD = { l:56, r:28, t:10, b:20 };
   const n = bars.length;
   const highs = bars.map(b => b.high), lows = bars.map(b => b.low), vols = bars.map(b => b.volume || 0);
-  const minP = Math.min(...lows) * 0.9978, maxP = Math.max(...highs) * 1.0022;
+  const minP = Math.min(...lows) * 0.997, maxP = Math.max(...highs) * 1.003;
   const maxV = Math.max(...vols) || 1;
-  const cW   = (W - PAD.l - PAD.r) / n;
+  const cW   = Math.max((W - PAD.l - PAD.r) / n, 1.5);
   const px   = i  => PAD.l + i * cW + cW * 0.5;
   const py   = v  => PAD.t + (1 - (v - minP) / (maxP - minP)) * H;
   const pv   = v  => (v / maxV) * VHGT;
+  const pr   = v  => (1 - (v - 0) / 100) * RSI_H;   // RSI 0-100 → RSI_H px
 
-  const pathD = bars.map((b, i) => `${i === 0 ? 'M' : 'L'}${px(i).toFixed(1)},${py(b.close).toFixed(1)}`).join(' ');
-  const e9p   = bars.reduce((a, b, i) => b.ema9  ? a + (a ? 'L' : 'M') + `${px(i).toFixed(1)},${py(b.ema9).toFixed(1)} `  : a, '');
-  const e20p  = bars.reduce((a, b, i) => b.ema20 ? a + (a ? 'L' : 'M') + `${px(i).toFixed(1)},${py(b.ema20).toFixed(1)} ` : a, '');
-  const e50p  = bars.reduce((a, b, i) => b.ema50 ? a + (a ? 'L' : 'M') + `${px(i).toFixed(1)},${py(b.ema50).toFixed(1)} ` : a, '');
-
-  // Last 30% of bars rendered as candles (up to 40)
-  const cc = Math.min(Math.floor(n * 0.30), 40);
-  const cs2 = n - cc;
-  const candleSvg = bars.slice(cs2).map((b, ci) => {
-    const i = cs2 + ci, x = px(i), bull = b.close >= b.open, cl = bull ? '#00d084' : '#ff3b3b';
+  // ── Candles (all bars) ──
+  const candleSvg = bars.map((b, i) => {
+    const x = px(i), bull = b.close >= b.open, cl = bull ? '#00d084' : '#ff3b3b';
     const bt = py(Math.max(b.open, b.close)), bb = py(Math.min(b.open, b.close)), bh = Math.max(bb - bt, 1);
-    const bw = Math.max(cW * 0.65, 1.5);
-    return `<rect x="${(x-bw/2).toFixed(1)}" y="${bt.toFixed(1)}" width="${bw.toFixed(1)}" height="${bh.toFixed(1)}" fill="${cl}" opacity=".78"/>
-            <line x1="${x.toFixed(1)}" y1="${py(b.high).toFixed(1)}" x2="${x.toFixed(1)}" y2="${py(b.low).toFixed(1)}" stroke="${cl}" stroke-width=".8"/>`;
+    const bw = Math.max(cW * 0.72, 1.2);
+    return `<rect x="${(x-bw/2).toFixed(1)}" y="${bt.toFixed(1)}" width="${bw.toFixed(1)}" height="${bh.toFixed(1)}" fill="${cl}" opacity=".82"/>
+            <line x1="${x.toFixed(1)}" y1="${py(b.high).toFixed(1)}" x2="${x.toFixed(1)}" y2="${py(b.low).toFixed(1)}" stroke="${cl}" stroke-width=".9"/>`;
   }).join('');
 
+  // ── EMAs ──
+  function _buildPath(key) {
+    let p = ''; let s = false;
+    bars.forEach((b, i) => { if (b[key] == null) return; p += (s ? 'L' : 'M') + `${px(i).toFixed(1)},${py(b[key]).toFixed(1)} `; s = true; });
+    return p;
+  }
+  const e9p = _buildPath('ema9'), e20p = _buildPath('ema20'), e50p = _buildPath('ema50');
+
+  // ── Volume ──
   const volSvg = bars.map((b, i) => {
     const vh = pv(b.volume || 0), bull = i > 0 ? b.close >= bars[i-1].close : b.close >= b.open;
-    return `<rect x="${(px(i)-cW*0.38).toFixed(1)}" y="${(VHGT-vh).toFixed(1)}" width="${(cW*0.76).toFixed(1)}" height="${vh.toFixed(1)}" fill="${bull?'#00d08430':'#ff3b3b30'}"/>`;
+    const vmFrac = b.vol_ma20 && maxV ? pv(b.vol_ma20) : null;
+    return `<rect x="${(px(i)-cW*0.38).toFixed(1)}" y="${(VHGT-vh).toFixed(1)}" width="${(cW*0.76).toFixed(1)}" height="${vh.toFixed(1)}" fill="${bull?'#00d08435':'#ff3b3b35'}"/>`;
   }).join('');
+  // Vol MA20 line
+  let volMaPath = ''; let vms = false;
+  bars.forEach((b, i) => {
+    if (b.vol_ma20 == null) return;
+    volMaPath += (vms ? 'L' : 'M') + `${px(i).toFixed(1)},${(VHGT - pv(b.vol_ma20)).toFixed(1)} `;
+    vms = true;
+  });
 
-  const step = Math.max(1, Math.floor(n / 8));
-  const xLbls = bars.filter((_, i) => i % step === 0)
-    .map(b => `<text x="${px(bars.indexOf(b)).toFixed(1)}" y="${H+PAD.t+PAD.b-4}" fill="#444" font-size="9" text-anchor="middle">${(b.time||'').slice(5)}</text>`).join('');
+  // ── RSI panel ──
+  let rsiPath = ''; let rs = false;
+  bars.forEach((b, i) => {
+    if (b.rsi == null) return;
+    rsiPath += (rs ? 'L' : 'M') + `${px(i).toFixed(1)},${pr(b.rsi).toFixed(1)} `;
+    rs = true;
+  });
+
+  // ── X axis labels ──
+  const step = Math.max(1, Math.floor(n / 10));
+  const xLbls = bars.map((b, i) => i % step === 0
+    ? `<text x="${px(i).toFixed(1)}" y="${H+PAD.t+PAD.b-3}" fill="#3a3a3a" font-size="8.5" text-anchor="middle">${(b.time||'').slice(2,10)}</text>`
+    : '').join('');
+
+  // ── Y axis ──
   const yLbls = Array.from({ length: 7 }, (_, i) => {
     const v = minP + (maxP - minP) * (i / 6), y = py(v).toFixed(1);
-    return `<text x="${PAD.l-4}" y="${+y+3}" fill="#444" font-size="9" text-anchor="end">${v.toFixed(0)}</text>
+    return `<text x="${PAD.l-5}" y="${+y+3}" fill="#3a3a3a" font-size="8.5" text-anchor="end">${v.toFixed(0)}</text>
             <line x1="${PAD.l}" y1="${y}" x2="${W-PAD.r}" y2="${y}" stroke="#161616" stroke-width=".5"/>`;
   }).join('');
 
-  const totalH = H + PAD.t + PAD.b + VHGT + 14;
-  document.getElementById('chartContent').innerHTML = `
-    <div style="font-size:.59rem;color:var(--muted);margin-bottom:5px;display:flex;gap:12px">
-      <span style="color:#555">▬ Price</span><span style="color:var(--blue)">— EMA9</span>
-      <span style="color:var(--amber)">— EMA20</span><span style="color:#9966cc">— EMA50</span>
-      <span style="color:var(--dim)">Last ${cc} bars: candles</span>
+  // ── News markers ──
+  // Parse news pub dates and match to bar dates
+  function _parseDate(pub) {
+    if (!pub) return null;
+    try { return new Date(pub).toISOString().slice(0, 10); } catch { return null; }
+  }
+  const newsMarkers = [];
+  if (newsArts && newsArts.length) {
+    // Build a date→bar-index map
+    const dateMap = {};
+    bars.forEach((b, i) => { if (b.time) dateMap[b.time.slice(0,10)] = i; });
+    newsArts.forEach((a, ni) => {
+      const dt = _parseDate(a.pub);
+      if (!dt) return;
+      const idx = dateMap[dt];
+      if (idx == null) return;
+      const x = px(idx).toFixed(1);
+      const y = (PAD.t - 4).toFixed(1);
+      const label = String.fromCharCode(9312 + (ni % 20)); // ① ② ③ ...
+      newsMarkers.push({ x, y, idx, label, title: a.title, source: a.source || '' });
+    });
+  }
+  const newsMarkerSvg = newsMarkers.map(m =>
+    `<g>
+      <line x1="${m.x}" y1="${PAD.t}" x2="${m.x}" y2="${H+PAD.t}" stroke="#ff8c0022" stroke-width="1" stroke-dasharray="3,3"/>
+      <circle cx="${m.x}" cy="${(PAD.t-3)}" r="6" fill="#140e00" stroke="var(--amber)" stroke-width="1"/>
+      <text x="${m.x}" y="${(PAD.t)}" fill="var(--amber)" font-size="6.5" text-anchor="middle" dominant-baseline="middle">${m.label}</text>
+    </g>`
+  ).join('');
+
+  // News legend below chart
+  const newsLegend = newsMarkers.length ? `
+    <div style="margin-top:8px;border-top:1px solid #1a1a1a;padding-top:6px">
+      <div style="font-size:.53rem;color:var(--amber);letter-spacing:.10em;text-transform:uppercase;margin-bottom:5px">📰 News Events on Chart</div>
+      ${newsMarkers.map(m => `<div style="display:flex;gap:7px;align-items:baseline;padding:3px 0;border-bottom:1px solid #111">
+        <span style="font-size:.68rem;color:var(--amber);flex-shrink:0">${m.label}</span>
+        <span style="font-size:.60rem;color:var(--white2);flex:1;line-height:1.4">${m.title}</span>
+        <span style="font-size:.54rem;color:var(--dim);flex-shrink:0">${m.source}</span>
+      </div>`).join('')}
+    </div>` : '';
+
+  // ── Last price line ──
+  const lpy = py(bars[n-1].close).toFixed(1);
+
+  // Layout: price panel → vol panel → RSI panel
+  const volTop = H + PAD.t + PAD.b + 4;
+  const rsiTop = volTop + VHGT + 14;
+  const totalH = rsiTop + RSI_H + 18;
+
+  document.getElementById('chartBody').innerHTML = `
+    <div style="font-size:.57rem;color:var(--muted);margin-bottom:4px;display:flex;gap:14px;flex-wrap:wrap">
+      <span style="color:#444">▬ Price</span>
+      <span style="color:var(--blue)">— EMA9</span>
+      <span style="color:var(--amber)">— EMA20</span>
+      <span style="color:#9966cc">— EMA50</span>
+      <span style="color:var(--green)">■ Vol+</span>
+      <span style="color:var(--red)">■ Vol−</span>
+      <span style="margin-left:auto;color:var(--dim)">${d.symbol} · ${bars.length} bars · ${bars[0]?.time||''}→${bars[n-1]?.time||''}</span>
     </div>
-    <div style="overflow-x:auto">
-      <svg viewBox="0 0 ${W} ${totalH}" style="width:100%;min-width:480px;display:block">
+    <div style="overflow-x:auto;-webkit-overflow-scrolling:touch">
+      <svg viewBox="0 0 ${W} ${totalH}" style="width:100%;min-width:${Math.max(600, n*3)}px;display:block">
+        <!-- Y grid + labels -->
         ${yLbls}
-        <g transform="translate(0,${H+PAD.t+PAD.b+4})">${volSvg}
-          <line x1="${PAD.l}" y1="0" x2="${W-PAD.r}" y2="0" stroke="#2a2a2a" stroke-width="1"/>
-          <text x="${PAD.l-4}" y="10" fill="#333" font-size="8" text-anchor="end">VOL</text>
-        </g>
-        <path d="${pathD}" fill="none" stroke="#333" stroke-width="1" opacity=".5"/>
+        <!-- Candles -->
         ${candleSvg}
-        <path d="${e50p}" fill="none" stroke="#9966cc" stroke-width="1" opacity=".7"/>
+        <!-- EMAs -->
+        <path d="${e50p}" fill="none" stroke="#9966cc" stroke-width="1" opacity=".65"/>
         <path d="${e20p}" fill="none" stroke="var(--amber)" stroke-width="1.2" opacity=".85"/>
-        <path d="${e9p}"  fill="none" stroke="var(--blue)"  stroke-width="1.2" opacity=".85"/>
+        <path d="${e9p}"  fill="none" stroke="var(--blue)"  stroke-width="1.3" opacity=".90"/>
+        <!-- News markers -->
+        ${newsMarkerSvg}
+        <!-- Last price line -->
+        <line x1="${PAD.l}" y1="${lpy}" x2="${W-PAD.r}" y2="${lpy}" stroke="#ff8c0055" stroke-width=".7" stroke-dasharray="3,2"/>
+        <text x="${W-PAD.r+2}" y="${+lpy+3}" fill="var(--amber)" font-size="8">₹${bars[n-1].close?.toFixed(0)}</text>
+        <!-- X labels -->
         ${xLbls}
+        <!-- Price axes -->
         <line x1="${PAD.l}" y1="${PAD.t}" x2="${PAD.l}" y2="${H+PAD.t}" stroke="#2a2a2a" stroke-width="1"/>
         <line x1="${PAD.l}" y1="${H+PAD.t}" x2="${W-PAD.r}" y2="${H+PAD.t}" stroke="#2a2a2a" stroke-width="1"/>
-        <line x1="${PAD.l}" y1="${py(bars[n-1].close).toFixed(1)}" x2="${W-PAD.r}" y2="${py(bars[n-1].close).toFixed(1)}" stroke="#ff8c0044" stroke-width=".8" stroke-dasharray="3,2"/>
-        <text x="${W-PAD.r+2}" y="${+py(bars[n-1].close)+3}" fill="var(--amber)" font-size="8">₹${bars[n-1].close?.toFixed(0)}</text>
+        <!-- Volume panel -->
+        <g transform="translate(0,${volTop})">
+          ${volSvg}
+          <path d="${volMaPath}" fill="none" stroke="#ff8c0060" stroke-width="1"/>
+          <line x1="${PAD.l}" y1="0" x2="${W-PAD.r}" y2="0" stroke="#2a2a2a" stroke-width="1"/>
+          <text x="${PAD.l-5}" y="10" fill="#333" font-size="8" text-anchor="end">VOL</text>
+          <line x1="${PAD.l}" y1="${VHGT}" x2="${W-PAD.r}" y2="${VHGT}" stroke="#1a1a1a" stroke-width=".5"/>
+        </g>
+        <!-- RSI panel -->
+        <g transform="translate(0,${rsiTop})">
+          <rect x="${PAD.l}" y="0" width="${W-PAD.l-PAD.r}" height="${RSI_H}" fill="#0d0d0d"/>
+          <line x1="${PAD.l}" y1="${pr(70).toFixed(1)}" x2="${W-PAD.r}" y2="${pr(70).toFixed(1)}" stroke="#ff3b3b22" stroke-width=".7" stroke-dasharray="3,2"/>
+          <line x1="${PAD.l}" y1="${pr(30).toFixed(1)}" x2="${W-PAD.r}" y2="${pr(30).toFixed(1)}" stroke="#00d08422" stroke-width=".7" stroke-dasharray="3,2"/>
+          <line x1="${PAD.l}" y1="${pr(50).toFixed(1)}" x2="${W-PAD.r}" y2="${pr(50).toFixed(1)}" stroke="#2a2a2a" stroke-width=".5"/>
+          <path d="${rsiPath}" fill="none" stroke="#cc88ff" stroke-width="1.2"/>
+          <line x1="${PAD.l}" y1="0" x2="${W-PAD.r}" y2="0" stroke="#2a2a2a" stroke-width="1"/>
+          <text x="${PAD.l-5}" y="10" fill="#555" font-size="8" text-anchor="end">RSI</text>
+          <text x="${PAD.l-5}" y="${pr(70).toFixed(1)+3}" fill="#3a2020" font-size="7" text-anchor="end">70</text>
+          <text x="${PAD.l-5}" y="${pr(30).toFixed(1)+3}" fill="#1a3020" font-size="7" text-anchor="end">30</text>
+        </g>
       </svg>
     </div>
-    <div style="font-size:.57rem;color:var(--dim);margin-top:3px">${d.symbol} · ${bars.length} bars · Last: ${bars[n-1].time||'—'}</div>`;
+    ${newsLegend}`;
 }
 
 // ── NEWS ──────────────────────────────────────────────────────────
@@ -1479,9 +1711,10 @@ async function loadNews(ticker) {
 
 // ── WATCHLIST ─────────────────────────────────────────────────────
 async function loadWatchlist(ticker) {
-  if (_wlLoaded) return; _wlLoaded = true;
+  if (_wlLoaded) return;
   try {
     const d = await fetch('/api/watchlist').then(r => r.json());
+    _wlLoaded = true;  // only mark loaded on success so errors allow retry
     renderWL(d.symbols || [], ticker);
   } catch(e) {
     document.getElementById('watchlistContent').innerHTML = `<div class="empty-state" style="color:var(--red)">${e.message}</div>`;
@@ -1637,7 +1870,7 @@ async function logAllSignalsMain() {
     btn.disabled = false;
     btn.classList.remove('saving');
     btn.textContent = '📸 Save Signals to DB';
-    setTimeout(() => { flash.textContent = ''; flash.className = 'flash'; }, 6000);
+    setTimeout(() => { flash.textContent = ''; flash.className = 'flash'; }, UI_CFG.FLASH_CLEAR_MS);
   }
 }
 
