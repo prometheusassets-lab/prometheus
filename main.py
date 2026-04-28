@@ -1179,7 +1179,9 @@ def compute_indicators(df: pd.DataFrame, rsi_period: int) -> dict:
     atr5  = tr.rolling(cfg.ATR_FAST).mean()
     atr20 = tr.rolling(cfg.ATR_SLOW).mean()
     sma200_n = min(cfg.SMA_TREND, len(c))
-    sma200   = float(c.tail(sma200_n).mean())
+    # Use rolling mean of exactly sma200_n bars (proper SMA, not just tail mean which is identical here,
+    # but rolling explicitly documents the intent and avoids off-by-one if c has an extra live bar appended).
+    sma200   = float(c.rolling(sma200_n).mean().iloc[-1]) if len(c) >= sma200_n else float(c.mean())
     vol_ma20 = float(v.rolling(20).mean().iloc[-1]) if len(v) >= 20 else float(v.mean())
 
     # ── Weekly trend (resample daily → weekly, check EMA9 > EMA20) ───────
@@ -1511,6 +1513,9 @@ def compute_features(ind: dict, ticker: str, ltp: float, day_vol: float,
     # ── Cross-sectional signals (computed externally, read here) ──
     bb_cs  = cs_state.get("cs_bb_squeeze", {}).get(ticker)
     if bb_cs is None:
+        # bb_width_compression_score returns (pct_below, 1-pct_below).
+        # pct_below = fraction of history with NARROWER bands than today → high = wide (not squeezed).
+        # We want the SQUEEZE score = 1 - pct_below = index [1].  This is correct.
         _, bb_cs = bb_width_compression_score(c)
     vdu_cs = cs_state.get("cs_vol_dryup", {}).get(ticker)
     if vdu_cs is None:
@@ -1632,7 +1637,9 @@ def compute_signals(feat: dict, ind: dict, df: pd.DataFrame,
     _rev_vol_p = float((v.iloc[:-1] / (v.iloc[:-1].rolling(20).mean() + 1e-9))
                        .dropna().quantile(cfg.REVERSAL_VOL_PRANK))                  if n >= 20 else 1.3
     is_reversal = (rsi_v < float(rsi.iloc[:-1].tail(cfg.PERCENTILE_WINDOW_PERSHORT).quantile(0.35)) and  # Bug 8 fix: exclude today from ref distribution
-                   t1_vol_ratio >= _rev_vol_p and washout_depth >= 1.5)
+                   t1_vol_ratio >= _rev_vol_p and
+                   washout_depth >= cfg.REVERSAL_MIN_WASHOUT_ATR and      # use config constant, not hardcoded 1.5
+                   t1_close_pos >= cfg.REVERSAL_TAIL_MIN_POS)              # tail must close in upper 40%+ of bar
 
     # ── Pullback geometry ────────────────────────────────────────
     # Distance from each EMA in ATR units (signed: + = above, - = below)
@@ -2429,8 +2436,8 @@ def aggregate_score(feat: dict, sig: dict, pen: dict,
             _vcp_w  = cfg.W_VCP
 
         vol_sig = (feat["vol_signal"] if setup == "Breakout"
-                   else feat["vol_signal"] if setup == "Coiling"   # accumulation slope pre-move
-                   else (1.0 - feat["vol_signal"]))                 # dryup desired for all pullback variants
+                   else (1.0 - feat["vol_signal"]) if setup == "Coiling"  # dryup desired pre-move: low vol = coiling energy
+                   else (1.0 - feat["vol_signal"]))                        # dryup desired for all pullback variants
 
         raw_sigs   = {
             "rs":        feat["rs_combined"],
@@ -3005,23 +3012,23 @@ def aggregate_score(feat: dict, sig: dict, pen: dict,
     # Core idea: coiling energy built up + price near trigger + RS strong
     # Four pathways — all require genuine signal quality, not just marginal coil:
     #   A. Breakout confirmed: vol confirmed + near pivot + RS strong + score ok
-    #   B. Pre-move coiling:  CoilingScore HIGH + VCP strong + vol DRY + proximity + RS
-    #      REQUIRES vol_dryup (vdu_cs >= 0.55) so we don't BUY into an expansion already started.
+    #   B. Pre-move coiling:  CoilingScore HIGH + VCP strong + vol genuinely DRY + RS + BB squeeze
+    #      REQUIRES vdu_cs ≥ 0.55 so we never BUY into a vol expansion that already started.
     #   C. Pullback at EMA:   PB-EMA/PB-Dry + proximity tight + vol genuinely dry + RS + score
-    #   D. Reversal:          washout + vol surge confirmed + RS alive + score
+    #   D. Reversal:          washout + vol surge CONFIRMED + RS alive + score
     _vdu = feat.get("vdu_cs")           # cross-sectional vol-dryup rank (0-1, higher = drier)
     _vdu_v = float(_vdu) if _vdu is not None else 0.5
-    _bb_cs = feat.get("bb_cs")
-    _bb_v  = float(_bb_cs) if _bb_cs is not None else 0.5
+    _bb_cs_v = feat.get("bb_cs")
+    _bb_v  = float(_bb_cs_v) if _bb_cs_v is not None else 0.5
 
     _is_buy = False
     if not _is_sell:
         if setup == "Breakout" and _vc and _prox >= 0.55 and _rs >= 0.50 and total >= 50:
-            # A. Volume-confirmed breakout from compression: proximity tight + RS above median + solid score
+            # A. Volume-confirmed breakout: proximity tight + RS above median + solid score
             _is_buy = True
         elif (setup == "Breakout" and _vc and
               _cs >= 55 and _vcp >= 0.45 and _prox >= 0.45 and _rs >= 0.45 and total >= 45):
-            # A2. Confirmed breakout from coiling base — slightly softer path but still filtered
+            # A2. Confirmed breakout from a coiling base — slightly softer path but still filtered
             _is_buy = True
         elif (setup in ("Coiling", "Breakout") and
               _cs >= 65 and                   # strong compression quality (top ~35% of universe)
@@ -3037,12 +3044,12 @@ def aggregate_score(feat: dict, sig: dict, pen: dict,
               _prox >= 0.55 and               # price tight against EMA support
               _rs >= 0.45 and                 # RS holding up
               _vdu_v >= 0.55 and              # volume genuinely drying on the pullback
-              _vol <= 0.45 and                # vol_signal low (raw vol below mean — truly dry)
+              _vol <= 0.45 and                # raw vol_signal low (truly dry, not just below average)
               total >= 48):                   # setup score must be solid
             # C. Pullback at support: tight price + genuinely dry vol + RS decent + score ok
             _is_buy = True
         elif (setup == "Reversal" and _rs >= 0.40 and total >= 45 and
-              _vol > 0.65 and _vc):           # vol surge must be confirmed — genuine capitulation reversal
+              _vol > 0.65 and _vc):           # vol surge must be CONFIRMED — genuine capitulation
             # D. Reversal: washout + confirmed vol surge + RS alive + score
             _is_buy = True
 
@@ -3055,7 +3062,8 @@ def aggregate_score(feat: dict, sig: dict, pen: dict,
         )
     elif _is_buy:
         _action = "BUY"
-        _vol_note = f"VolDry {_vdu_v:.2f}" if not _vc else f"VolConf {feat.get('vol_ratio', 0):.1f}×"
+        _vol_note = (f"VolConf {feat.get('vol_ratio', 0):.1f}×" if _vc
+                     else f"VolDry {_vdu_v:.2f}")
         _action_reason = (
             f"Score {total:.0f} | {setup} | Coil {_cs:.0f} | VCP {_vcp:.2f} | RS {_rs:.2f} | {_vol_note}"
         )
@@ -3974,16 +3982,18 @@ def run_extraction(targets_dict: dict, min_avg_vol: int) -> None:
                         "LiveVol": int(live_lq["volume"]) if live_lq.get("volume") else None,
                         **result,
                     }
-                    # ── Compute PreMoveRank inline for this row so the PREMOVE★ column
-                    # is populated immediately in the SSE stream (not just after full rescore).
+                    # ── Compute PreMoveRank inline for this SSE row so the PREMOVE★ column
+                    # is populated immediately — not just after full rescore.
+                    # Mirrors _apply_coverage_score() formula exactly.
                     try:
-                        _cs_r  = float(result.get("CoilingScore") or 0) / 100.0
-                        _vcp_r = float(result.get("VCP")          or 0) / 10.0
-                        _clv_r = float(result.get("CLVAccum")     or 0) / 8.0
-                        _prx_r = float(result.get("Proximity")    or 0) / 10.0
-                        _str_r = min(float(result.get("CoilStreakDays") or 0), 7.0) / 7.0
+                        _pmr_cs  = float(result.get("CoilingScore") or 0) / 100.0
+                        _pmr_vcp = float(result.get("VCP")          or 0) / 10.0
+                        _pmr_clv = float(result.get("CLVAccum")     or 0) / 8.0
+                        _pmr_prx = float(result.get("Proximity")    or 0) / 10.0
+                        _pmr_str = min(float(result.get("CoilStreakDays") or 0), 7.0) / 7.0
                         row["PreMoveRank"] = round(
-                            (_cs_r * 0.35 + _vcp_r * 0.25 + _clv_r * 0.20 + _prx_r * 0.15 + _str_r * 0.05) * 100, 4
+                            (_pmr_cs * 0.35 + _pmr_vcp * 0.25 + _pmr_clv * 0.20 +
+                             _pmr_prx * 0.15 + _pmr_str * 0.05) * 100, 4
                         )
                     except Exception:
                         row["PreMoveRank"] = None
@@ -3993,7 +4003,7 @@ def run_extraction(targets_dict: dict, min_avg_vol: int) -> None:
                     with STATE_LOCK:
                         STATE["score_cache"][sym] = {
                             "result": result, "ltp": ltp_now, "vol": vol_now,
-                            "rsi_period": STATE.get("rsi_period", 7),
+                            "rsi_period": STATE.get("rsi_period", 14),
                             "version": SCORE_RESULT_VERSION,
                         }
                         STATE["_row_stream_queue"].append(row)
@@ -4067,7 +4077,7 @@ def refresh_live_prices_bg() -> None:
         # The old approach wiped the entire score_cache, forcing a full VCP/Darvas/RS rescore
         # for all stocks on every price tick.  Indicators that don't depend on LTP (MA structure, VCP,
         # Darvas, RS percentile ranks) are still valid after a small price move.
-        current_rsi = STATE.get("rsi_period", 7)
+        current_rsi = STATE.get("rsi_period", 14)
         to_evict = []
         for sym, cached_e in STATE["score_cache"].items():
             if cached_e.get("rsi_period") != current_rsi:
@@ -4151,8 +4161,8 @@ def get_db() -> sqlite3.Connection:
 
 # Increment this whenever new fields are added to the score result dict.
 # The screener will reject cached results with a lower version and re-score.
-SCORE_RESULT_VERSION = 3   # bumped: tightened BUY thresholds + vol dryup gates
-SCORE_CACHE_KV_KEY   = "score_cache_v2"   # kv_store key for persisted score cache
+SCORE_RESULT_VERSION = 3   # bumped: BUY gates tightened, vol_sig Coiling fixed, reversal tail gate added
+SCORE_CACHE_KV_KEY   = "score_cache_v3"   # kv_store key — bumped with version to purge stale v2 cache
 STATE_KV_KEY         = "state_v2"          # kv_store key for market context + cs_ranks + targets
 
 def save_state_to_db() -> None:
@@ -4731,7 +4741,7 @@ async def get_screener(sort_by: str = "CoilingScore", horizon: str = "ALL"):
             vol_now  = live.get("volume") or (float(df_raw["volume"].iloc[-1]) if "volume" in df_raw.columns else 0)
             cached_e = sc_snap.get(sym)
             # Cache hit: LTP within 1% AND rsi_period unchanged
-            rsi_match = cached_e and cached_e.get("rsi_period") == STATE.get("rsi_period", 7)
+            rsi_match = cached_e and cached_e.get("rsi_period") == STATE.get("rsi_period", 14)
             ltp_match = cached_e and abs(cached_e.get("ltp", 0) - ltp_now) < 0.01 * ltp_now
             ver_match = cached_e and cached_e.get("version") == SCORE_RESULT_VERSION
             if rsi_match and ltp_match and ver_match and cached_e.get("result") is not None:
@@ -4740,7 +4750,7 @@ async def get_screener(sort_by: str = "CoilingScore", horizon: str = "ALL"):
                 result = score_stock_dual(sym, df_raw, live, nifty_r5, nifty_r20)
                 STATE["score_cache"][sym] = {
                     "result": result, "ltp": ltp_now, "vol": vol_now,
-                    "rsi_period": STATE.get("rsi_period", 7),
+                    "rsi_period": STATE.get("rsi_period", 14),
                     "version": SCORE_RESULT_VERSION,
                 }
             if result is None: continue
@@ -4828,7 +4838,7 @@ async def get_premove_candidates(min_coil: float = 55.0, min_vcp: float = 4.0,
             live     = lq_snap.get(normalize_key(tgt_snap.get(sym, "")), {})
             ltp_now  = live.get("ltp") or float(df_raw["close"].iloc[-1])
             cached_e = sc_snap.get(sym)
-            rsi_match = cached_e and cached_e.get("rsi_period") == STATE.get("rsi_period", 7)
+            rsi_match = cached_e and cached_e.get("rsi_period") == STATE.get("rsi_period", 14)
             ltp_match = cached_e and abs(cached_e.get("ltp", 0) - ltp_now) < 0.01 * ltp_now
             ver_match = cached_e and cached_e.get("version") == SCORE_RESULT_VERSION
             if rsi_match and ltp_match and ver_match and cached_e.get("result") is not None:
@@ -4838,7 +4848,7 @@ async def get_premove_candidates(min_coil: float = 55.0, min_vcp: float = 4.0,
                 if result:
                     STATE["score_cache"][sym] = {
                         "result": result, "ltp": ltp_now, "vol": 0,
-                        "rsi_period": STATE.get("rsi_period", 7),
+                        "rsi_period": STATE.get("rsi_period", 14),
                         "version": SCORE_RESULT_VERSION,
                     }
             if result is None: continue
@@ -5195,7 +5205,7 @@ async def get_chart_data(symbol: str, bars: int = 0, tf: str = "1d"):
                     (df["high"] - df["close"].shift(1)).abs(),
                     (df["low"]  - df["close"].shift(1)).abs()], axis=1).max(axis=1)
     df["atr"]    = tr.ewm(span=14, adjust=False).mean().round(2)
-    rsi_p        = STATE.get("rsi_period", 7)
+    rsi_p        = STATE.get("rsi_period", 14)
     delta        = c.diff()
     gain         = delta.clip(lower=0).ewm(alpha=1 / rsi_p, adjust=False).mean()
     loss         = (-delta.clip(upper=0)).ewm(alpha=1 / rsi_p, adjust=False).mean()
@@ -5223,7 +5233,7 @@ async def explain_score(symbol: str):
                 with STATE_LOCK:
                     STATE["score_cache"][sym] = {
                         "result": cached, "ltp": ltp_now, "vol": 0,
-                        "rsi_period": STATE.get("rsi_period", 7),
+                        "rsi_period": STATE.get("rsi_period", 14),
                     }
         except Exception as e:
             raise HTTPException(500, f"Score computation failed: {e}")
