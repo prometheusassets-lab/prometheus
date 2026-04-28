@@ -1227,7 +1227,8 @@ def compute_features(ind: dict, ticker: str, ltp: float, day_vol: float,
                       day_hi: float, day_lo: float, day_o: float,
                       nifty_r5: Optional[float], nifty_r20: Optional[float],
                       market_ctx: dict, cs_state: dict,
-                      param_registry: dict) -> dict:
+                      param_registry: dict,
+                      rsi_period: int = 14) -> dict:  # FIX: accept rsi_period so VolClimax uses correct period
     """Stage 2 — all normalized (0-1) feature scores. Pure, no global mutation."""
     cfg  = SCORE_CFG
     c, h, l, v = ind["c"], ind["h"], ind["l"], ind["v"]
@@ -1536,7 +1537,7 @@ def compute_features(ind: dict, ticker: str, ltp: float, day_vol: float,
     if n >= 40:
         _vr_hist_all = (v.iloc[:-1] / (v.iloc[:-1].rolling(20).mean() + 1e-9)).dropna()
         vol_prank    = float((_vr_hist_all < vol_ratio).mean()) if len(_vr_hist_all) >= 20 else 0.5
-        _rsi_hist    = _rsi_wilder(c, 7).iloc[:-1].dropna()
+        _rsi_hist    = _rsi_wilder(c, rsi_period).iloc[:-1].dropna()  # FIX: was hardcoded rsi_wilder(c, 7); must match scoring RSI period
         rsi_prank    = float((_rsi_hist < rsi_v).mean())        if len(_rsi_hist)    >= 14 else 0.5
         _ext_hist    = ((c.iloc[:-1] - h.iloc[:-1].rolling(20).max().shift(1)) /
                         (atr.iloc[:-2] + 1e-9)).dropna()
@@ -1699,8 +1700,9 @@ def compute_signals(feat: dict, ind: dict, df: pd.DataFrame,
     _market_kill = _nifty_intraday_chg <= cfg.NIFTY_INTRADAY_KILL
     # Priority:
     #   1. Reversal  — oversold panic with volume spike
-    #   2. PB-EMA    — retreated to EMA20/EMA9, volume quiet, above EMA50
-    #   3. Breakout  — at pivot WITH volume confirmation AND session/market ok
+    #   2. Breakout  — at pivot WITH volume confirmation AND session/market ok
+    #      (MOVED before PB-EMA: a stock at EMA20 + at pivot + vol confirm = Breakout, not PB-EMA)
+    #   3. PB-EMA    — retreated to EMA20/EMA9, volume quiet, above EMA50
     #   4. Coiling   — strong compression signals but vol not confirmed yet (pre-move)
     #   5. PB-Dry    — real pullback, vol drying, not yet at EMA (deeper but healthy)
     #   6. PB-Deep   — real pullback above EMA50 but not near an EMA (still correcting)
@@ -1708,13 +1710,14 @@ def compute_signals(feat: dict, ind: dict, df: pd.DataFrame,
     if is_reversal:
         setup_type = "Reversal"
 
+    elif at_pivot and vol_confirm and not _market_kill:
+        # At the base pivot with volume confirmation — genuine breakout.
+        # Checked BEFORE PB-EMA so a stock at EMA20 + at_pivot + vol = Breakout, not PB-EMA.
+        setup_type = "Breakout"
+
     elif real_pb and (near_ema20_band or near_ema9_band) and above_e50:
         # Textbook pullback: retreated, price is AT the EMA support band, trend intact
         setup_type = "PB-EMA"
-
-    elif at_pivot and vol_confirm and not _market_kill:
-        # At the base pivot with volume confirmation — genuine breakout
-        setup_type = "Breakout"
 
     elif breakout_ext > ext_p90 and vol_confirm and not _market_kill:
         # Extended with volume but price already > 1.5 ATR above base — move already done.
@@ -2971,6 +2974,73 @@ def aggregate_score(feat: dict, sig: dict, pen: dict,
     # vix and breadth can be negative (bonus) — exclude those from the display.
     total_pen = sum(p for p in pen["penalties"].values() if p > 0)
 
+    # ── Action Signal (BUY / SELL / HOLD) ─────────────────────────────────
+    # Based purely on scoring signals: CoilingScore, VCP, volume, RS,
+    # proximity, setup type, and composite score. No penalty heuristics.
+    #
+    # BUY  = strong setup with compression + volume/RS alignment
+    # SELL = exhaustion: extended + vol climax, or overextended + overbought RS
+    # HOLD = building / watchlist — signals present but not aligned yet
+
+    _cs   = coiling_score                          # 0-100 compression quality
+    _vcp  = sig.get("vcp_sc", 0.0)                # 0-1 VCP pattern score
+    _prox = sig.get("prox_sc", 0.0)               # 0-1 proximity to trigger
+    _vol  = feat.get("vol_signal", 0.5)            # 0-1 volume signal
+    _rs   = feat.get("rs_combined", 0.5)           # 0-1 cross-sectional RS
+    _vc   = sig.get("vol_confirm", False)          # confirmed breakout volume
+    _rsi  = feat["rsi_v"]
+    _bext = feat["breakout_ext"]                   # ATR units above base high
+
+    # ── SELL: exhaustion / distribution ───────────────────────────────────
+    # Either VolClimax (RSI+vol+extension all in top decile of own history)
+    # OR: RSI in top 15% of own history AND price overextended AND vol surge
+    _rsi_p85 = float(_rsi_wilder(c, rsi_period).iloc[:-1].tail(60).quantile(0.85)) \
+               if len(c) >= 20 else 72.0
+    _is_sell = (
+        vol_climax or
+        (_rsi >= _rsi_p85 and _bext > sig.get("ext_p90", 0.5) and _vol > 0.65)
+    )
+
+    # ── BUY: compression + alignment ──────────────────────────────────────
+    # Core idea: coiling energy built up + price near trigger + RS strong
+    # Three pathways:
+    #   A. Breakout confirmed: vol confirmed + near pivot + RS decent
+    #   B. Pre-move coiling:  CoilingScore high + VCP + proximity + RS
+    #   C. Pullback at EMA:   PB-EMA/PB-Dry + proximity + RS + score ok
+    _is_buy = False
+    if not _is_sell:
+        if setup == "Breakout" and _vc and _prox >= 0.45 and _rs >= 0.45:
+            # A. Volume confirmed breakout with RS strength
+            _is_buy = True
+        elif setup in ("Coiling", "Breakout") and _cs >= 55 and _vcp >= 0.40 and _prox >= 0.40 and _rs >= 0.40:
+            # B. Pre-move: strong compression + VCP pattern + price near trigger + RS
+            _is_buy = True
+        elif setup in ("PB-EMA", "PB-Dry") and _prox >= 0.45 and _rs >= 0.40 and _vol <= 0.55 and total >= 42:
+            # C. Pullback at support: price near EMA + vol drying + RS decent + score ok
+            _is_buy = True
+        elif setup == "Reversal" and _rs >= 0.35 and total >= 40 and _vol > 0.55:
+            # D. Reversal: washout with vol surge + RS not completely dead + score ok
+            _is_buy = True
+
+    if _is_sell:
+        _action = "SELL"
+        _rsi_p85_str = f"{_rsi_p85:.0f}"
+        _action_reason = (
+            "VolClimax — exhaustion top" if vol_climax
+            else f"RSI {_rsi:.0f} ≥ P85({_rsi_p85_str}) + Extended + VolSurge"
+        )
+    elif _is_buy:
+        _action = "BUY"
+        _action_reason = (
+            f"Score {total:.0f} | {setup} | Coil {_cs:.0f} | VCP {_vcp:.2f} | RS {_rs:.2f}"
+        )
+    else:
+        _action = "HOLD"
+        _action_reason = (
+            f"Score {total:.0f} | {setup} — signals building, not aligned yet"
+        )
+
+
     return {
         # ── Core ──────────────────────────────────────────────────
         "SetupType":   setup, "Score": round(total, 1),
@@ -3078,6 +3148,9 @@ def aggregate_score(feat: dict, sig: dict, pen: dict,
         # ── Freshness / build-up (Sub-Problems 1 & 2) ──────────────────
         "VolBuildPct":       round(sig.get("vol_build_pct", 0.0), 3),
         "BreakoutMinsAgo":   sig.get("breakout_mins_ago"),   # None for non-Breakout rows
+        # ── Action signal ──────────────────────────────────────────
+        "Action":       _action,        # "BUY" | "SELL" | "HOLD"
+        "ActionReason": _action_reason, # brief human-readable explanation
     }
 
 
@@ -3118,7 +3191,7 @@ def score_stock_dual(ticker: str, df: pd.DataFrame,
         day_vol_sc = day_vol
     df.at[df.index[-1], "volume"] = day_vol_sc
 
-    rsi_period  = int(STATE.get("rsi_period", 7))
+    rsi_period  = int(STATE.get("rsi_period", 14))   # FIX: was 7; STATE default is 14, fallback must match
     mkt         = STATE.get("mkt", {})
     cs_state    = {
         "cs_rs_5d":       STATE.get("cs_rs_5d",        {}),
@@ -3163,7 +3236,8 @@ def score_stock_dual(ticker: str, df: pd.DataFrame,
             ind, ticker, ltp, day_vol_sc,
             day_hi, day_lo, day_o,
             nifty_r5, nifty_r20,
-            market_ctx, cs_state, param_reg
+            market_ctx, cs_state, param_reg,
+            rsi_period   # FIX: pass rsi_period so VolClimax RSI prank uses correct period
         )
         # Validate
         if feat["atr_v"] <= 0 or vol_ma20 <= 0 or ltp <= 0:
