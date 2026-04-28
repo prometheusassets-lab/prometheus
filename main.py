@@ -3003,23 +3003,47 @@ def aggregate_score(feat: dict, sig: dict, pen: dict,
 
     # ── BUY: compression + alignment ──────────────────────────────────────
     # Core idea: coiling energy built up + price near trigger + RS strong
-    # Three pathways:
-    #   A. Breakout confirmed: vol confirmed + near pivot + RS decent
-    #   B. Pre-move coiling:  CoilingScore high + VCP + proximity + RS
-    #   C. Pullback at EMA:   PB-EMA/PB-Dry + proximity + RS + score ok
+    # Four pathways — all require genuine signal quality, not just marginal coil:
+    #   A. Breakout confirmed: vol confirmed + near pivot + RS strong + score ok
+    #   B. Pre-move coiling:  CoilingScore HIGH + VCP strong + vol DRY + proximity + RS
+    #      REQUIRES vol_dryup (vdu_cs >= 0.55) so we don't BUY into an expansion already started.
+    #   C. Pullback at EMA:   PB-EMA/PB-Dry + proximity tight + vol genuinely dry + RS + score
+    #   D. Reversal:          washout + vol surge confirmed + RS alive + score
+    _vdu = feat.get("vdu_cs")           # cross-sectional vol-dryup rank (0-1, higher = drier)
+    _vdu_v = float(_vdu) if _vdu is not None else 0.5
+    _bb_cs = feat.get("bb_cs")
+    _bb_v  = float(_bb_cs) if _bb_cs is not None else 0.5
+
     _is_buy = False
     if not _is_sell:
-        if setup == "Breakout" and _vc and _prox >= 0.45 and _rs >= 0.45:
-            # A. Volume confirmed breakout with RS strength
+        if setup == "Breakout" and _vc and _prox >= 0.55 and _rs >= 0.50 and total >= 50:
+            # A. Volume-confirmed breakout from compression: proximity tight + RS above median + solid score
             _is_buy = True
-        elif setup in ("Coiling", "Breakout") and _cs >= 55 and _vcp >= 0.40 and _prox >= 0.40 and _rs >= 0.40:
-            # B. Pre-move: strong compression + VCP pattern + price near trigger + RS
+        elif (setup == "Breakout" and _vc and
+              _cs >= 55 and _vcp >= 0.45 and _prox >= 0.45 and _rs >= 0.45 and total >= 45):
+            # A2. Confirmed breakout from coiling base — slightly softer path but still filtered
             _is_buy = True
-        elif setup in ("PB-EMA", "PB-Dry") and _prox >= 0.45 and _rs >= 0.40 and _vol <= 0.55 and total >= 42:
-            # C. Pullback at support: price near EMA + vol drying + RS decent + score ok
+        elif (setup in ("Coiling", "Breakout") and
+              _cs >= 65 and                   # strong compression quality (top ~35% of universe)
+              _vcp >= 0.55 and                # VCP score well above median (5.5/10 in display pts)
+              _prox >= 0.50 and               # price within typical approach distance of pivot
+              _rs >= 0.50 and                 # RS above median vs universe
+              _vdu_v >= 0.55 and              # volume is genuinely drying up (above median dryup rank)
+              _bb_v >= 0.55 and               # Bollinger Bands are genuinely squeezed
+              not _vc):                       # vol NOT yet confirmed — pure pre-move watchlist BUY
+            # B. Pre-move coil/VCP: genuine compression + vol dryup + RS + near pivot
             _is_buy = True
-        elif setup == "Reversal" and _rs >= 0.35 and total >= 40 and _vol > 0.55:
-            # D. Reversal: washout with vol surge + RS not completely dead + score ok
+        elif (setup in ("PB-EMA", "PB-Dry") and
+              _prox >= 0.55 and               # price tight against EMA support
+              _rs >= 0.45 and                 # RS holding up
+              _vdu_v >= 0.55 and              # volume genuinely drying on the pullback
+              _vol <= 0.45 and                # vol_signal low (raw vol below mean — truly dry)
+              total >= 48):                   # setup score must be solid
+            # C. Pullback at support: tight price + genuinely dry vol + RS decent + score ok
+            _is_buy = True
+        elif (setup == "Reversal" and _rs >= 0.40 and total >= 45 and
+              _vol > 0.65 and _vc):           # vol surge must be confirmed — genuine capitulation reversal
+            # D. Reversal: washout + confirmed vol surge + RS alive + score
             _is_buy = True
 
     if _is_sell:
@@ -3031,8 +3055,9 @@ def aggregate_score(feat: dict, sig: dict, pen: dict,
         )
     elif _is_buy:
         _action = "BUY"
+        _vol_note = f"VolDry {_vdu_v:.2f}" if not _vc else f"VolConf {feat.get('vol_ratio', 0):.1f}×"
         _action_reason = (
-            f"Score {total:.0f} | {setup} | Coil {_cs:.0f} | VCP {_vcp:.2f} | RS {_rs:.2f}"
+            f"Score {total:.0f} | {setup} | Coil {_cs:.0f} | VCP {_vcp:.2f} | RS {_rs:.2f} | {_vol_note}"
         )
     else:
         _action = "HOLD"
@@ -3949,6 +3974,19 @@ def run_extraction(targets_dict: dict, min_avg_vol: int) -> None:
                         "LiveVol": int(live_lq["volume"]) if live_lq.get("volume") else None,
                         **result,
                     }
+                    # ── Compute PreMoveRank inline for this row so the PREMOVE★ column
+                    # is populated immediately in the SSE stream (not just after full rescore).
+                    try:
+                        _cs_r  = float(result.get("CoilingScore") or 0) / 100.0
+                        _vcp_r = float(result.get("VCP")          or 0) / 10.0
+                        _clv_r = float(result.get("CLVAccum")     or 0) / 8.0
+                        _prx_r = float(result.get("Proximity")    or 0) / 10.0
+                        _str_r = min(float(result.get("CoilStreakDays") or 0), 7.0) / 7.0
+                        row["PreMoveRank"] = round(
+                            (_cs_r * 0.35 + _vcp_r * 0.25 + _clv_r * 0.20 + _prx_r * 0.15 + _str_r * 0.05) * 100, 4
+                        )
+                    except Exception:
+                        row["PreMoveRank"] = None
                     # Sanitize NaN/inf for JSON serialisation
                     row = {k: (None if isinstance(v, float) and (math.isnan(v) or math.isinf(v)) else v)
                            for k, v in row.items()}
@@ -4113,7 +4151,7 @@ def get_db() -> sqlite3.Connection:
 
 # Increment this whenever new fields are added to the score result dict.
 # The screener will reject cached results with a lower version and re-score.
-SCORE_RESULT_VERSION = 2
+SCORE_RESULT_VERSION = 3   # bumped: tightened BUY thresholds + vol dryup gates
 SCORE_CACHE_KV_KEY   = "score_cache_v2"   # kv_store key for persisted score cache
 STATE_KV_KEY         = "state_v2"          # kv_store key for market context + cs_ranks + targets
 
