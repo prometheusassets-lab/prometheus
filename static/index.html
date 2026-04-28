@@ -858,12 +858,21 @@ function setupBadge(v, row) {
   let badge = '';
   if (v === 'Breakout' && row) {
     const mins = row.BreakoutMinsAgo;
+    const dsb  = row.DaysSinceBreak;   // 0 = crossed pivot today, >0 = days ago
     let col = map.Breakout;
     let freshnessLabel = '';
-    if (mins != null) {
-      if (mins < 90)       { col = 'var(--green)';  freshnessLabel = ` <span style="font-size:.52rem;opacity:.8">(${mins}m ago)</span>`; }
-      else if (mins < 180) { col = 'var(--amber)';  freshnessLabel = ` <span style="font-size:.52rem;opacity:.8">(${mins}m ago)</span>`; }
-      else                 { col = 'var(--red)';    freshnessLabel = ` <span style="font-size:.52rem;opacity:.8">(${mins}m ago)</span>`; }
+    // Only show "Xm ago" when:
+    //   1. BreakoutMinsAgo is a real number (not null)
+    //   2. DaysSinceBreak === 0 (pivot was crossed TODAY, not days ago)
+    //   3. mins < 240 (within today's session — anything ≥240 is stale/wrong)
+    if (mins != null && dsb === 0 && mins < 240) {
+      if (mins < 45)        { col = 'var(--green)';  freshnessLabel = ` <span style="font-size:.52rem;opacity:.9;color:var(--green)">(${mins}m ago)</span>`; }
+      else if (mins < 120)  { col = 'var(--amber2)'; freshnessLabel = ` <span style="font-size:.52rem;opacity:.8;color:var(--amber2)">(${mins}m ago)</span>`; }
+      else                  { col = 'var(--amber)';  freshnessLabel = ` <span style="font-size:.52rem;opacity:.7;color:var(--amber)">(${mins}m ago)</span>`; }
+    } else if (dsb > 0) {
+      // Stale: pivot was crossed N days ago — show warning, not a fresh timer
+      col = 'var(--dim)';
+      freshnessLabel = ` <span style="font-size:.50rem;opacity:.6;color:var(--red)">(${dsb}d old)</span>`;
     }
     badge = `<span style="color:${col};font-size:.58rem;font-weight:700">${v}</span>${freshnessLabel}`;
   } else if (v === 'Coiling' && row && row.VolBuildPct != null) {
@@ -2082,19 +2091,40 @@ async function logAllSignalsMain() {
   btn.disabled = true;
   btn.classList.add('saving');
   btn.textContent = '⟳ Saving…';
-  flash.textContent = '';
+  flash.textContent = 'Queuing snapshot…';
   flash.className = 'flash';
   try {
     const d = await fetch('/api/calibration/snapshot', { method: 'POST' }).then(r => r.json());
     if (d.error) {
       flash.textContent = '✘ ' + d.error;
       flash.className = 'flash err';
+      return;
+    }
+    // Backend queued the job — poll for real result
+    if (d.queued) {
+      flash.textContent = '⟳ Saving ' + d.logged + ' signals…';
+      flash.className = 'flash';
+      // Poll /api/calibration/snapshot/status until done
+      for (let i = 0; i < 30; i++) {
+        await new Promise(r => setTimeout(r, 2000));
+        const s = await fetch('/api/calibration/snapshot/status').then(r => r.json());
+        if (s.status === 'done') {
+          if (s.errors > 0) {
+            flash.textContent = `✔ Logged ${s.logged} signals (${s.errors} errors: ${s.error_detail || ''})`;
+            flash.className = 'flash err';
+          } else {
+            flash.textContent = `✔ Logged ${s.logged} signals.`;
+            flash.className = 'flash ok';
+            const sf = document.getElementById('calibFlash');
+            if (sf) { sf.textContent = flash.textContent; sf.className = 'flash ok'; }
+          }
+          break;
+        }
+        flash.textContent = `⟳ Saving… (${i*2}s)`;
+      }
     } else {
       flash.textContent = '✔ Logged ' + d.logged + ' signals.';
       flash.className = 'flash ok';
-      // Also update sidebar flash for consistency
-      const sf = document.getElementById('calibFlash');
-      if (sf) { sf.textContent = flash.textContent; sf.className = 'flash ok'; }
     }
   } catch(e) {
     flash.textContent = '✘ ' + e.message;
