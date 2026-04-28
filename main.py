@@ -1759,8 +1759,14 @@ def compute_signals(feat: dict, ind: dict, df: pd.DataFrame,
 
     # ── Breakout geometry ────────────────────────────────────────
     # Price is at or just above the pivot (20-day high), in ATR terms.
-    # Lower bound uses ext_p10 (data-driven) instead of a magic -0.5.
-    at_pivot = breakout_ext >= ext_p10 and breakout_ext <= ext_p90
+    # Lower bound: use P25 of historical extension distribution — tighter than P10.
+    # P10 is typically -1.5 ATR, allowing stocks sitting 1.5 ATR BELOW the pivot
+    # to be classified as "at_pivot", which is wrong — they haven't arrived yet.
+    # P25 is typically -0.4 to -0.6 ATR: price must be genuinely approaching the pivot.
+    # Upper bound: ext_p90 — price this far above base is already extended.
+    ext_p25 = float(ext_hist.quantile(0.25)) if len(ext_hist) >= 20 else -0.5
+    ext_p25 = min(ext_p25, -0.2)   # floor: never looser than -0.2 ATR below pivot
+    at_pivot = breakout_ext >= ext_p25 and breakout_ext <= ext_p90
 
     # ── Session guard: suppress vol_confirm before VOL_CONFIRM_MIN_FRAC ──
     # Even pace-adjusted volume in the first ~30% of the session is too noisy
@@ -2274,19 +2280,19 @@ def compute_penalties(feat: dict, sig: dict, market_ctx: dict,
     setup = sig["setup_type"]
 
     # ── Pre-rally magnitude: how much did price run BEFORE this base formed? ──────
-    # If the stock surged >stock-relative threshold in the 20 bars before base_hi
-    # was set, this is a continuation setup at elevated levels, not a fresh breakout.
-    # Penalty scales with the magnitude of the prior run.
-    # Only applies to Breakout and Coiling — PB setups are intentionally at elevated prices.
-    if setup in ("Breakout", "Coiling") and len(c) >= 45:
-        # Price 20-40 bars ago (before the current base window)
-        _pre_base_c  = c.iloc[-(45):-20]   # bars before the base window
+    # If the stock surged >stock-relative threshold before base_hi was set,
+    # this is a continuation setup at elevated levels, not a fresh breakout.
+    # Window: bars -65 to -45 ago. base_hi uses bars -1 to -21 (h.iloc[:-1].tail(20)).
+    # Using -45:-20 had overlap with the base window at bars -20 to -25.
+    # -65:-45 is cleanly before the base — no overlap, measures the prior trend run.
+    # Requires 70 bars minimum (65 lookback + 5 minimum pre-base window).
+    if setup in ("Breakout", "Coiling") and len(c) >= 70:
+        _pre_base_c  = c.iloc[-65:-45]   # 20 bars cleanly before the base window
         _pre_base_lo = float(_pre_base_c.min()) if len(_pre_base_c) >= 5 else 0.0
         _base_hi_v   = feat["base_hi"]
         if _pre_base_lo > 0 and _base_hi_v > 0:
             _prior_run = (_base_hi_v - _pre_base_lo) / (_pre_base_lo + 1e-9)
-            # Stock-relative run threshold: use ATR% to normalise
-            # A 2% ATR stock that ran 12% (6 ATRs) in 20 bars = already moved
+            # Convert % return to ATR units: (% gain × price) / ATR = ATR units gained
             _run_atr_units = _prior_run * ltp / (feat["atr_v"] + 1e-9)
             if _run_atr_units > 5.0:   # ran more than 5 ATRs before the base
                 _run_excess = (_run_atr_units - 5.0) / 5.0   # 0 at 5 ATR, 1.0 at 10 ATR
@@ -2295,12 +2301,24 @@ def compute_penalties(feat: dict, sig: dict, market_ctx: dict,
     # ── pos52w penalty: stock already at top of its 52W range ────────────────
     # A stock at 90th+ percentile of its 52W range has already had the big move.
     # Breakout/Coiling setups at these levels are continuation plays, not fresh entries.
-    # Pos52w is computed in compute_features but never penalised — fix that here.
     if setup in ("Breakout", "Coiling"):
         _p52 = feat.get("pos52w", 0.5)
         if _p52 > 0.88:   # top 12% of 52W range
             _p52_excess = (_p52 - 0.88) / 0.12   # 0 at 0.88, 1.0 at 1.0
             penalties["pos52w_ext"] = float(np.clip(10.0 * np.tanh(_p52_excess * 2.0), 0.0, 12.0))
+
+    # ── Combined "already moved" cap ──────────────────────────────────────────
+    # prior_run and pos52w_ext measure related things (big move before base).
+    # Stacking them can silently bury a genuine fresh breakout at a 52W high.
+    # Cap: the larger of the two wins; combined total capped at 20 pts.
+    _pr  = penalties.get("prior_run",  0.0)
+    _p52p = penalties.get("pos52w_ext", 0.0)
+    if _pr > 0 and _p52p > 0:
+        _combined = _pr + _p52p
+        if _combined > 20.0:
+            _scale = 20.0 / _combined
+            penalties["prior_run"]  = round(_pr  * _scale, 2)
+            penalties["pos52w_ext"] = round(_p52p * _scale, 2)
 
     # Below-SMA200 hard gate for Breakout / Coiling setups.
     # Pullback and Reversal setups below SMA200 are legitimate mean-reversion
@@ -2317,11 +2335,15 @@ def compute_penalties(feat: dict, sig: dict, market_ctx: dict,
             penalties["already_bo"] = float(np.clip(6.0 * np.tanh(z * 2.0), 0.0, cfg.ALREADY_BO_CAP))
 
     # ── Stale breakout: move already happened N days ago ─────────────────
-    # If price crossed above base_hi more than 3 bars ago, this is NOT a fresh
-    # entry — it is a post-move consolidation. Apply a scaling penalty.
+    # Previously fired at _dsb >= 4 — too late. A breakout 3 days old is not
+    # a fresh entry. Fire from _dsb >= 2 with a soft ramp:
+    #   day 2 → tanh(0.25) × 12 ≈ 3 pts   (light caution)
+    #   day 4 → tanh(0.75) × 12 ≈ 8 pts   (meaningful)
+    #   day 7 → tanh(1.50) × 12 ≈ 11 pts  (near max)
+    #   day 10+ → capped at 15 pts
     _dsb = sig.get("days_since_break", 0)
-    if setup in ("Breakout", "Coiling") and _dsb >= 4:
-        _stale_excess = (_dsb - 3) / 5.0   # 0 at 3 days, 1.0 at 8 days
+    if setup in ("Breakout", "Coiling") and _dsb >= 2:
+        _stale_excess = (_dsb - 1) / 4.0   # 0 at day 1, 1.0 at day 5, 2.25 at day 10
         penalties["stale_breakout"] = float(np.clip(12.0 * np.tanh(_stale_excess), 0.0, 15.0))
 
     # ── Overextended breakout (above ext_p90) ─────────────────────
