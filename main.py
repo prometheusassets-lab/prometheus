@@ -467,6 +467,26 @@ assert abs(_rev_w_sum - 1.0) < 1e-9, (
     "Update ScoreConfig.REV_W_* fields to correct fractions."
 )
 
+# Startup assertion: coiling score weights must sum to 1.0.
+# CoilingScore has the largest single weight (W_COIL=0.20) in the main score;
+# a miscalibrated COIL_W_* set silently inflates/deflates the entire pipeline.
+_coil_w_sum = (SCORE_CFG.COIL_W_BB + SCORE_CFG.COIL_W_VDU + SCORE_CFG.COIL_W_CLV +
+               SCORE_CFG.COIL_W_VCP + SCORE_CFG.COIL_W_SC + SCORE_CFG.COIL_W_VC)
+assert abs(_coil_w_sum - 1.0) < 1e-6, (
+    f"COIL_W_* weights must sum to 1.0; got {_coil_w_sum:.8f}. "
+    "Update ScoreConfig.COIL_W_* fields."
+)
+
+# Startup assertion: main score component weights must sum to 1.0.
+_main_w_sum = (SCORE_CFG.W_RS + SCORE_CFG.W_RS_SECT + SCORE_CFG.W_MOMENTUM +
+               SCORE_CFG.W_VOLUME + SCORE_CFG.W_COIL + SCORE_CFG.W_MA +
+               SCORE_CFG.W_PROXIMITY + SCORE_CFG.W_VCP + SCORE_CFG.W_DARVAS +
+               SCORE_CFG.W_MICROSTRUCTURE)
+assert abs(_main_w_sum - 1.0) < 1e-6, (
+    f"Main score W_* weights must sum to 1.0; got {_main_w_sum:.8f}. "
+    "Update ScoreConfig.W_* fields."
+)
+
 # ═════════════════════════════════════════════════════════════════
 # 2. APP + MIDDLEWARE
 # ═════════════════════════════════════════════════════════════════
@@ -772,6 +792,11 @@ STATE: Dict = {
     # each stock. The SSE stream reads and clears this list, pushing "row" events
     # to the frontend so the table populates stock-by-stock without waiting.
     "_row_stream_queue": [],
+    # ── CHG% fix: immutable previous-session close, captured BEFORE patch_live_bar()
+    # overwrites iloc[-1].  This is the single source of truth for DayChg_pct across
+    # extraction, screener GET, SSE prices patch, and premove endpoint.
+    # Key: symbol (str) → Value: float (last fully-completed session close)
+    "prev_close_cache": {},
 }
 STATE_LOCK = threading.Lock()
 
@@ -1111,7 +1136,12 @@ def detect_vcp(c: pd.Series, h: pd.Series, l: pd.Series,
            for p in recent]
     tight_sc = float(np.clip(1.0 - tight_r / (np.percentile(_th, 75) + 1e-9), 0.0, 1.0)) \
                if len(_th) >= 3 else float(np.clip(1.0 - tight_r / 3.0, 0.0, 1.0))
-    pos_sc   = float(np.clip((float(c.iloc[-1]) - last_sl) / cons_rng, 0.0, 1.0))
+    # FIX: use hc.iloc[-1] (the last bar of the pattern slice, same as the rest of
+    # detect_vcp) rather than c.iloc[-1] (today's live LTP from the full series).
+    # c.iloc[-1] is today's patched bar; hc = c.iloc[:-1] so the pattern boundaries
+    # exclude it.  Using c.iloc[-1] could push pos_sc > 1.0 on breakout days
+    # (before the clip), discarding the signal that price has already moved.
+    pos_sc   = float(np.clip((float(hc.iloc[-1]) - last_sl) / cons_rng, 0.0, 1.0))
     # Geometric mean of the 4 pattern conditions (contraction, compression, dryup, tightness).
     # Geometric mean is correct here: ALL four must be present simultaneously.
     # If any one is near-zero the composite collapses, unlike arithmetic mean which masks weak legs.
@@ -1690,7 +1720,12 @@ def compute_signals(feat: dict, ind: dict, df: pd.DataFrame,
     # ── Breakout geometry ────────────────────────────────────────
     # Price is at or just above the pivot (20-day high), in ATR terms.
     # Lower bound uses ext_p10 (data-driven) instead of a magic -0.5.
-    at_pivot = breakout_ext >= ext_p10 and breakout_ext <= ext_p90
+    # FIX: at_pivot was True for ANY stock within ext_p10..ext_p90, which includes
+    # stocks sitting 1-2 ATR BELOW their 20d high. A genuine pivot breakout requires
+    # price to be within 0.3 ATR of the base_hi (approaching or touching the pivot).
+    # The ext_p90 upper cap is preserved to avoid labeling already-extended moves.
+    _BO_PIVOT_ENTRY_ATR = 0.3   # max distance below base_hi to qualify as "at pivot"
+    at_pivot = breakout_ext >= -_BO_PIVOT_ENTRY_ATR and breakout_ext <= ext_p90
 
     # ── Session guard: suppress vol_confirm before VOL_CONFIRM_MIN_FRAC ──
     # Even pace-adjusted volume in the first ~30% of the session is too noisy
@@ -1698,7 +1733,11 @@ def compute_signals(feat: dict, ind: dict, df: pd.DataFrame,
     # and the Breakout label is suppressed; the stock is labelled "Developing BO"
     # via the horizon note instead.
     _vol_confirm_allowed = elapsed_frac >= cfg.VOL_CONFIRM_MIN_FRAC
-    vol_confirm = (day_vol_sc >= vol_bo_thresh) and _vol_confirm_allowed
+    # FIX: vol_confirm was purely volume-based — a flat stock with slightly elevated
+    # volume got vol_confirm=True. A real breakout also requires price to be at or
+    # above the pivot (within BO_ENTRY_BUFFER_ATR above base_hi).
+    _price_at_pivot = ltp >= base_hi - (_BO_PIVOT_ENTRY_ATR * atr_v)
+    vol_confirm = (day_vol_sc >= vol_bo_thresh) and _vol_confirm_allowed and _price_at_pivot
 
     # ── Intraday market circuit breaker ──────────────────────────────────
     # When Nifty is down >= 2% on the day, issuing Breakout labels is
@@ -3356,12 +3395,16 @@ def fetch_live_quotes(all_keys: List[str]) -> dict:
                     continue
                 ohlc = v.get("ohlc", {})
                 out[nk] = {
-                    "ltp":    float(ltp),
-                    "open":   float(ohlc.get("open", ltp)),
-                    "high":   float(ohlc.get("high", ltp)),
-                    "low":    float(ohlc.get("low",  ltp)),
-                    "volume": float(v["volume"]) if v.get("volume") else None,
-                    "oi":     float(v["oi"])     if v.get("oi")     else None,
+                    "ltp":        float(ltp),
+                    "open":       float(ohlc.get("open",  ltp)),
+                    "high":       float(ohlc.get("high",  ltp)),
+                    "low":        float(ohlc.get("low",   ltp)),
+                    # ohlc.close from Upstox is the previous session's close price.
+                    # Store it so we can seed prev_close_cache without relying on
+                    # iloc[-1] from historical data (which may not yet have today's bar).
+                    "prev_close": float(ohlc.get("close", ltp)) if ohlc.get("close") else None,
+                    "volume":     float(v["volume"]) if v.get("volume") else None,
+                    "oi":         float(v["oi"])     if v.get("oi")     else None,
                     "last_trade_time": v.get("last_trade_time"),
                 }
         except Exception:
@@ -3851,6 +3894,7 @@ def run_extraction(targets_dict: dict, min_avg_vol: int) -> None:
                   "errors": 0, "rate_limited": 0, "empty": 0, "log": []})
         STATE["raw_data_cache"] = {}; STATE["score_cache"] = {}
         STATE["_row_stream_queue"] = []   # clear any leftover rows from previous run
+        STATE["prev_close_cache"] = {}    # reset CHG% baseline for new extraction run
         for k in ("cs_rs_5d","cs_rs_20d","cs_bb_squeeze","cs_vol_dryup","cs_clv_accum","cs_vcp"):
             STATE[k] = {}
         # NOTE: coil_streak_days is intentionally NOT reset here.
@@ -3932,8 +3976,21 @@ def run_extraction(targets_dict: dict, min_avg_vol: int) -> None:
             if min_avg_vol > 0 and len(df_c) >= 5:
                 if float(df_c["volume"].tail(20).mean()) < min_avg_vol:
                     continue
+            # ── CHG% FIX: capture the true previous-session close BEFORE patching.
+            # patch_live_bar() overwrites iloc[-1] with today's intraday LTP.
+            # After patching, iloc[-2] may be 2 sessions ago on stocks where Upstox
+            # does not yet have a today-row (partial day), inflating CHG% wildly.
+            # Priority: (1) Upstox ohlc.close (authoritative broker prev-session close)
+            #           (2) df_c["close"].iloc[-1] before any patch (last completed candle)
+            lq_for_pc = live_q.get(normalize_key(targets_dict.get(sym, "")), {})
+            _prev_close_for_chg = (
+                lq_for_pc.get("prev_close")                                  # preferred: broker field
+                or (float(df_c["close"].iloc[-1]) if len(df_c) >= 1 else None)  # fallback: last bar
+            )
             with STATE_LOCK:
                 STATE["raw_data_cache"][sym] = df_c
+                if _prev_close_for_chg is not None:
+                    STATE["prev_close_cache"][sym] = float(_prev_close_for_chg)
 
             # ── Progressive score: score this stock immediately with whatever
             # CS ranks are available so far. The result is provisional — RS
@@ -3970,9 +4027,14 @@ def run_extraction(targets_dict: dict, min_avg_vol: int) -> None:
                 result   = score_stock_dual(sym, df_c, live_lq,
                                             mkt.get("nifty_r5"), mkt.get("nifty_r20"))
                 if result is not None:
-                    ltp_now = live_lq.get("ltp") or float(df_c["close"].iloc[-1])
+                    _ltp_lq_raw = live_lq.get("ltp")
+                    ltp_now = float(_ltp_lq_raw) if _ltp_lq_raw is not None else float(df_c["close"].iloc[-1])
                     vol_now = live_lq.get("volume") or (float(df_c["volume"].iloc[-1]) if "volume" in df_c.columns else 0)
-                    prev_close = float(df_c["close"].iloc[-2]) if len(df_c) >= 2 else ltp_now
+                    # Use immutable prev_close_cache captured before patch_live_bar().
+                    # Use explicit None check — stored value could legitimately be 0.0 (halted stock).
+                    _pc_val = STATE.get("prev_close_cache", {}).get(sym)
+                    prev_close = _pc_val if _pc_val is not None else \
+                                 (float(df_c["close"].iloc[-2]) if len(df_c) >= 2 else ltp_now)
                     day_chg = round((ltp_now - prev_close) / (prev_close + 1e-9) * 100, 2)
                     row = {
                         "Ticker": sym, "LTP": round(float(ltp_now), 2),
@@ -4033,7 +4095,7 @@ def run_extraction(targets_dict: dict, min_avg_vol: int) -> None:
             if cached:
                 live = lq.get(normalize_key(tg.get(sym, "")), {})
                 rows_to_save.append({"Ticker": sym,
-                                     "LTP": round(live.get("ltp") or float(df_raw["close"].iloc[-1]), 2),
+                                     "LTP": round(float(live.get("ltp")) if live.get("ltp") is not None else float(df_raw["close"].iloc[-1]), 2),
                                      **cached})
         if rows_to_save:
             save_snapshot(rows_to_save, universe)
@@ -4057,6 +4119,11 @@ def refresh_live_prices_bg() -> None:
             if not key: continue
             lq = live.get(normalize_key(key))
             if not lq: continue
+            # ── CHG% FIX: if broker supplies prev_close (ohlc.close), update our
+            # cache.  This handles the edge case where prev_close_cache was not
+            # populated from the initial extraction (e.g. restart without re-extract).
+            if lq.get("prev_close") and sym not in STATE.get("prev_close_cache", {}):
+                STATE.setdefault("prev_close_cache", {})[sym] = float(lq["prev_close"])
             STATE["raw_data_cache"][sym] = patch_live_bar(df, lq)
         STATE["live_quotes_cache"] = live
         STATE["last_live_refresh"]  = time.time()
@@ -4266,6 +4333,17 @@ def restore_state_from_db(st: dict) -> None:
             st["rs_div_hist"] = blob["rs_div_hist"]
         if "mkt" in blob and isinstance(blob["mkt"], dict):
             st["mkt"] = blob["mkt"]
+
+        # ── BO saturation FIX: seed _bo_saturation_frac from the restored score
+        # cache so the saturation guard fires correctly on first screener GET
+        # after a restart (instead of defaulting to 0 and never discounting).
+        _cached_results_restore = [v.get("result") for v in st.get("score_cache", {}).values()
+                                    if v.get("result")]
+        if _cached_results_restore:
+            _bo_cnt  = sum(1 for r in _cached_results_restore
+                           if r.get("SetupType") in ("Breakout", "Coiling"))
+            _tot_cnt = max(len(_cached_results_restore), 1)
+            st["_bo_saturation_frac"] = _bo_cnt / _tot_cnt
     except Exception:
         pass
 
@@ -4658,7 +4736,12 @@ async def extraction_stream():
                         ltp_now = live.get("ltp")
                         if ltp_now is None:
                             continue
-                        prev_close = (float(df_raw["close"].iloc[-2])
+                        # Use immutable prev_close_cache (captured before patching).
+                        # This is the same source used by the screener GET so the
+                        # blink-update and initial load are always consistent.
+                        _pc = STATE.get("prev_close_cache", {}).get(sym)
+                        prev_close = _pc if _pc is not None else \
+                                     (float(df_raw["close"].iloc[-2])
                                       if len(df_raw) >= 2 else float(ltp_now))
                         chg = round((float(ltp_now) - prev_close)
                                     / (prev_close + 1e-9) * 100, 2)
@@ -4737,7 +4820,8 @@ async def get_screener(sort_by: str = "CoilingScore", horizon: str = "ALL"):
             if _min_vol > 0 and "volume" in df_raw.columns and len(df_raw) >= 5:
                 if float(df_raw["volume"].tail(20).mean()) < _min_vol: continue
             live     = lq_snap.get(normalize_key(tgt_snap.get(sym, "")), {})
-            ltp_now  = live.get("ltp") or float(df_raw["close"].iloc[-1])
+            _ltp_raw = live.get("ltp")
+            ltp_now  = float(_ltp_raw) if _ltp_raw is not None else float(df_raw["close"].iloc[-1])
             vol_now  = live.get("volume") or (float(df_raw["volume"].iloc[-1]) if "volume" in df_raw.columns else 0)
             cached_e = sc_snap.get(sym)
             # Cache hit: LTP within 1% AND rsi_period unchanged
@@ -4748,13 +4832,18 @@ async def get_screener(sort_by: str = "CoilingScore", horizon: str = "ALL"):
                 result = cached_e["result"]
             else:
                 result = score_stock_dual(sym, df_raw, live, nifty_r5, nifty_r20)
-                STATE["score_cache"][sym] = {
-                    "result": result, "ltp": ltp_now, "vol": vol_now,
-                    "rsi_period": STATE.get("rsi_period", 14),
-                    "version": SCORE_RESULT_VERSION,
-                }
+                with STATE_LOCK:
+                    STATE["score_cache"][sym] = {
+                        "result": result, "ltp": ltp_now, "vol": vol_now,
+                        "rsi_period": STATE.get("rsi_period", 14),
+                        "version": SCORE_RESULT_VERSION,
+                    }
             if result is None: continue
-            prev_close = float(df_raw["close"].iloc[-2]) if len(df_raw) >= 2 else ltp_now
+            # Use immutable prev_close_cache captured before patch_live_bar().
+            # Fallback to iloc[-2] only if cache entry is missing.
+            _pc = STATE.get("prev_close_cache", {}).get(sym)
+            prev_close = _pc if _pc is not None else \
+                         (float(df_raw["close"].iloc[-2]) if len(df_raw) >= 2 else ltp_now)
             day_chg    = round((ltp_now - prev_close) / (prev_close + 1e-9) * 100, 2) if prev_close else None
             rows.append({
                 "Ticker": sym, "LTP": round(float(ltp_now), 2),
@@ -4779,11 +4868,16 @@ async def get_screener(sort_by: str = "CoilingScore", horizon: str = "ALL"):
         df_out = df_out.sort_values(sort_by, ascending=False).reset_index(drop=True)
     df_out.insert(0, "Rank", df_out.index + 1)
     if STATE.get("sector_cap_enabled") and "Sector" in df_out.columns:
-        seen = set(); capped = []
+        seen = set(); capped = []; unknown_count = 0
         for _, row in df_out.iterrows():
             sec = str(row.get("Sector", "?"))
-            if sec == "?" or sec not in seen: capped.append(row)
-            if sec != "?": seen.add(sec)
+            if sec == "?":
+                # Allow up to 3 unknown-sector stocks through so genuine signals
+                # aren't completely suppressed by a missing sector mapping.
+                if unknown_count < 3:
+                    capped.append(row); unknown_count += 1
+            elif sec not in seen:
+                capped.append(row); seen.add(sec)
         df_out = pd.DataFrame(capped).reset_index(drop=True); df_out["Rank"] = df_out.index + 1
     if horizon != "ALL":
         df_out = df_out[df_out["Horizon"] == horizon].reset_index(drop=True); df_out["Rank"] = df_out.index + 1
@@ -4836,7 +4930,8 @@ async def get_premove_candidates(min_coil: float = 55.0, min_vcp: float = 4.0,
     for sym, df_raw in raw_snap.items():
         try:
             live     = lq_snap.get(normalize_key(tgt_snap.get(sym, "")), {})
-            ltp_now  = live.get("ltp") or float(df_raw["close"].iloc[-1])
+            _ltp_raw_pm = live.get("ltp")
+            ltp_now  = float(_ltp_raw_pm) if _ltp_raw_pm is not None else float(df_raw["close"].iloc[-1])
             cached_e = sc_snap.get(sym)
             rsi_match = cached_e and cached_e.get("rsi_period") == STATE.get("rsi_period", 14)
             ltp_match = cached_e and abs(cached_e.get("ltp", 0) - ltp_now) < 0.01 * ltp_now
@@ -4846,18 +4941,21 @@ async def get_premove_candidates(min_coil: float = 55.0, min_vcp: float = 4.0,
             else:
                 result = score_stock_dual(sym, df_raw, live, nifty_r5, nifty_r20)
                 if result:
-                    STATE["score_cache"][sym] = {
-                        "result": result, "ltp": ltp_now, "vol": 0,
-                        "rsi_period": STATE.get("rsi_period", 14),
-                        "version": SCORE_RESULT_VERSION,
-                    }
+                    with STATE_LOCK:
+                        STATE["score_cache"][sym] = {
+                            "result": result, "ltp": ltp_now, "vol": 0,
+                            "rsi_period": STATE.get("rsi_period", 14),
+                            "version": SCORE_RESULT_VERSION,
+                        }
             if result is None: continue
             # Pre-move filter: must be in compression or pullback phase, not already broken out
             if result.get("SetupType") not in ("Coiling", "PB-EMA", "PB-Dry", "PB-Deep", "Base"): continue
             if (result.get("CoilingScore") or 0) < min_coil: continue
             if (result.get("VCP") or 0) < min_vcp: continue
             if (result.get("CoilStreakDays") or 0) < min_streak: continue
-            prev_close = float(df_raw["close"].iloc[-2]) if len(df_raw) >= 2 else ltp_now
+            _pc = STATE.get("prev_close_cache", {}).get(sym)
+            prev_close = _pc if _pc is not None else \
+                         (float(df_raw["close"].iloc[-2]) if len(df_raw) >= 2 else ltp_now)
             day_chg = round((ltp_now - prev_close) / (prev_close + 1e-9) * 100, 2)
             rows.append({
                 "Ticker": sym,
@@ -5229,7 +5327,8 @@ async def explain_score(symbol: str):
         try:
             cached = score_stock_dual(sym, df_raw, live, mkt.get("nifty_r5"), mkt.get("nifty_r20"))
             if cached:
-                ltp_now = live.get("ltp") or float(df_raw["close"].iloc[-1])
+                _ltp_raw_es = live.get("ltp")
+                ltp_now = float(_ltp_raw_es) if _ltp_raw_es is not None else float(df_raw["close"].iloc[-1])
                 with STATE_LOCK:
                     STATE["score_cache"][sym] = {
                         "result": cached, "ltp": ltp_now, "vol": 0,
@@ -5239,7 +5338,8 @@ async def explain_score(symbol: str):
             raise HTTPException(500, f"Score computation failed: {e}")
     if not cached: raise HTTPException(404, "Score unavailable — insufficient data (need 60+ bars)")
     s   = cached
-    ltp = live.get("ltp") or float(df_raw["close"].iloc[-1])
+    _ltp_raw_ex = live.get("ltp")
+    ltp = float(_ltp_raw_ex) if _ltp_raw_ex is not None else float(df_raw["close"].iloc[-1])
 
     def _fv(v, dec=2):
         if v is None: return "—"
@@ -5433,7 +5533,8 @@ async def export_screener_csv():
         cached = score_snap.get(sym, {}).get("result")
         if cached:
             live = lq_snap.get(normalize_key(tgt_snap.get(sym, "")), {})
-            ltp  = live.get("ltp") or float(df_raw["close"].iloc[-1])
+            _ltp_raw_exp = live.get("ltp")
+            ltp  = float(_ltp_raw_exp) if _ltp_raw_exp is not None else float(df_raw["close"].iloc[-1])
             rows.append({"Ticker": sym, "LTP": round(ltp, 2), **cached})
     if not rows: raise HTTPException(404, "No scored rows")
     df_out = pd.DataFrame(rows).replace({float("nan"): "", float("inf"): "", float("-inf"): ""})
@@ -5493,7 +5594,16 @@ async def backtest(
     hit_rate    = float((fwd > 0).mean())
     avg_ret     = float(fwd.mean())
     std_ret     = float(fwd.std()) if len(fwd) > 1 else 0.0
-    sharpe      = float(avg_ret / (std_ret + 1e-9) * np.sqrt(252 / SCORE_CFG.FORWARD_RETURN_DAYS))
+    # NOTE: This is a cross-sectional information ratio, NOT a time-series Sharpe.
+    # Each row is an independent snapshot (not a sequential equity curve), so the
+    # standard annualisation factor sqrt(252/N) over-counts periods and inflates
+    # the value significantly for short holding periods (e.g. N=5 → factor ~7).
+    # The correct interpretation: mean/std of the forward-return distribution
+    # (i.e. how consistently positive the distribution is).  We preserve the
+    # sqrt-scaled version for backward compatibility but label it clearly.
+    information_ratio = float(avg_ret / (std_ret + 1e-9) * np.sqrt(252 / SCORE_CFG.FORWARD_RETURN_DAYS))
+    # Simple (unscaled) information ratio for cross-sectional snapshot analysis:
+    raw_ir = float(avg_ret / (std_ret + 1e-9))
 
     # Max drawdown — sort descending (winners first) for a conservative
     # worst-case path estimate.  True path-dependent DD requires a time-ordered
@@ -5523,12 +5633,15 @@ async def backtest(
         "n_rows":   len(rows),
         "hit_rate": round(hit_rate, 3),
         "avg_fwd_ret_pct": round(avg_ret * 100, 2),
-        "sharpe":   round(sharpe, 3),
+        "information_ratio": round(information_ratio, 3),
+        "raw_ir": round(raw_ir, 3),
         "max_drawdown_pct": round(max_dd * 100, 2),
         "forward_return_days": SCORE_CFG.FORWARD_RETURN_DAYS,
         "decile_breakdown": decile_stats,
-        "note": ("BreakoutProb is NOT a calibrated probability. "
-                 "Use this endpoint's hit_rate per decile to validate score thresholds."),
+        "note": ("information_ratio is annualised mean/std and is inflated for short N-day "
+                 "holding periods due to cross-sectional (not time-series) data. "
+                 "Use hit_rate and avg_fwd_ret_pct per decile to validate score thresholds. "
+                 "BreakoutProb is NOT a calibrated probability."),
     }
 
 
