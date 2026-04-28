@@ -145,6 +145,10 @@ tr:hover td { background: #140e00; color: var(--amber2); }
 .tag-bo  { background: #1a0e00; color: var(--amber); border: 1px solid #ff8c0033; }
 .tag-oi  { background: #0a0015; color: var(--blue);  border: 1px solid #1e90ff33; }
 .tag-rev { background: #1a0a00; color: #ff8c00; border: 1px solid #ff8c0055; }
+/* Action badge */
+.action-buy  { display:inline-block; font-size:.52rem; font-weight:800; letter-spacing:.08em; padding:2px 6px; background:#001a0a; color:var(--green);  border:1px solid #00d08455; border-radius:1px; }
+.action-sell { display:inline-block; font-size:.52rem; font-weight:800; letter-spacing:.08em; padding:2px 6px; background:#1a0000; color:var(--red);    border:1px solid #ff3b3b55; border-radius:1px; }
+.action-hold { display:inline-block; font-size:.52rem; font-weight:800; letter-spacing:.08em; padding:2px 6px; background:#0d0d0d; color:var(--muted);  border:1px solid #2a2a2a;  border-radius:1px; }
 .sig { display: inline-block; width: 6px; height: 6px; border-radius: 50%; margin-right: 2px; vertical-align: middle; }
 .sig-g { background: var(--green); }
 .sig-n { background: #2a2a2a; }
@@ -400,6 +404,13 @@ tr.row-updated td { color: var(--green2) !important; animation: none; }
           <option value="Base">Base (no signal)</option>
           <option value="Reversal">Reversal</option>
         </select>
+        <span class="filter-label">Action:</span>
+        <select class="filter-select" id="actionFilter" onchange="applyFilters()">
+          <option value="">All</option>
+          <option value="BUY">BUY</option>
+          <option value="SELL">SELL</option>
+          <option value="HOLD">HOLD</option>
+        </select>
         <span class="results-count" id="visibleCount"></span>
       </div>
 
@@ -550,6 +561,7 @@ const COLS = {
   // Identity
   Rank:        { label:'#',          fmt: r => r.Rank ?? '—',                              align:'L' },
   Ticker:      { label:'Ticker',     fmt: r => tickerCell(r),                               align:'L' },
+  Action:      { label:'Action',     fmt: r => actionBadge(r),                              align:'L' },
   Sector:      { label:'Sector',     fmt: r => `<span style="color:var(--dim)">${r.Sector||'—'}</span>`, align:'L' },
   SetupType:   { label:'Setup',      fmt: r => setupBadge(r.SetupType, r),                 align:'L' },
   Horizon:     { label:'Horizon',    fmt: r => horizonBadge(r.Horizon),                    align:'L' },
@@ -675,7 +687,7 @@ const COLS = {
 // ── VIEW COLUMN SETS ─────────────────────────────────────────────
 const VIEW_COLS = {
   core: [
-    'Rank','Ticker','Sector','SetupType','Horizon','Score','EMI','CompositeRank','PreMoveRank',
+    'Rank','Ticker','Action','Sector','SetupType','Horizon','Score','EMI','CompositeRank','PreMoveRank',
     'LTP','DayChg_pct','LiveVol','RSI7','ATR%','RR',
     'RS','CSRank5d','RS_Sector','MA_Struct',
     'CoilingScore','CoilStreakDays','DaysSinceBreak','SoftPenalty','WeeklyTrendUp',
@@ -684,7 +696,7 @@ const VIEW_COLS = {
     'UpVolSkew','CPR','SpreadPts','ATRExpOnset','OI_Buildup','VolVelocity','RSDivergence',
   ],
   trade: [
-    'Rank','Ticker','Sector','SetupType','Horizon','Score','EMI',
+    'Rank','Ticker','Action','Sector','SetupType','Horizon','Score','EMI',
     'LTP','Entry','Target','Stop','RR','Move%','KellyFrac','ATR%',
     'RSI7','VolRatio','VolZ',
     'BBSqueeze','VolDryUp','CLVAccum','VCP','VCP_Detected','BreakoutProb',
@@ -692,7 +704,7 @@ const VIEW_COLS = {
     'Sweep','VWMA20_OK','Stability','DaysSinceBreak','SoftPenalty','WeeklyTrendUp','AboveSMA200','HorizonNote',
   ],
   factor: [
-    'Rank','Ticker','Sector','SetupType','Score',
+    'Rank','Ticker','Action','Sector','SetupType','Score',
     'RS','RS_Sector','Volume','InstVol','VolCont','RCI',
     'BBSqueeze','VolDryUp','CLVAccum',
     'VCP','VCP_Contraction','VCP_VolComp','VCP_VolDryup','VCP_Tightness','VCP_Position',
@@ -707,7 +719,7 @@ const VIEW_COLS = {
   // Shows CoilingScore first so you can sort by it and find the best
   // coiling setups BEFORE volume confirms — not after.
   coiling: [
-    'Rank','Ticker','Sector','SetupType','CoilingScore','CoilStreakDays',
+    'Rank','Ticker','Action','Sector','SetupType','CoilingScore','CoilStreakDays',
     'Horizon','Score','LTP','ATR%',
     'BBSqueeze','VolDryUp','CLVAccum','VCP','VCP_Detected',
     'Coil','SpreadPts','VolCont','BreakoutProb',
@@ -719,7 +731,7 @@ const VIEW_COLS = {
   // Shows PreMoveRank (CoilingScore×VCP×CLV×Proximity×Streak) first.
   // Use this to hunt for stocks about to break out BEFORE it happens.
   premove: [
-    'Rank','Ticker','Sector','SetupType','PreMoveRank','CoilingScore','CoilStreakDays',
+    'Rank','Ticker','Action','Sector','SetupType','PreMoveRank','CoilingScore','CoilStreakDays',
     'Horizon','Score','LTP','DayChg_pct','ATR%',
     'VCP','VCP_Detected','CLVAccum','BBSqueeze','VolDryUp',
     'Proximity','Coil','SpreadPts',
@@ -911,6 +923,13 @@ function signalDots(r) {
     { t:'WeeklyTrend ↑', v: r.WeeklyTrendUp !== false },  // grey only when explicitly false
     { t:'VolClimax ⚠',  v: !r.VolClimax },   // green = NOT in climax; red = climax warning
   ].map(d => `<span class="sig ${d.v ? 'sig-g' : 'sig-n'}" title="${d.t}"></span>`).join('');
+}
+function actionBadge(r) {
+  const a = r.Action;
+  const reason = (r.ActionReason || '').replace(/"/g, '&quot;');
+  if (a === 'BUY')  return `<span class="action-buy"  title="${reason}">▲ BUY</span>`;
+  if (a === 'SELL') return `<span class="action-sell" title="${reason}">▼ SELL</span>`;
+  return `<span class="action-hold" title="${reason}">◆ HOLD</span>`;
 }
 
 // ════════════════════════════════════════════════════
@@ -1250,11 +1269,13 @@ function filterSector(s) {
 function applyFilters() {
   const q  = document.getElementById('searchInput').value.toLowerCase();
   const st = document.getElementById('setupFilter').value;
+  const af = document.getElementById('actionFilter') ? document.getElementById('actionFilter').value : '';
   _filteredRows = _rows.filter(r => {
     const mq  = !q  || (r.Ticker||'').toLowerCase().includes(q) || (r.Sector||'').toLowerCase().includes(q);
     const ms  = !_sectorFilter || r.Sector === _sectorFilter;
     const mst = !st || r.SetupType === st;
-    return mq && ms && mst;
+    const maf = !af || r.Action === af;
+    return mq && ms && mst && maf;
   });
 
   // Recompute live RR median from the currently visible filtered set.
