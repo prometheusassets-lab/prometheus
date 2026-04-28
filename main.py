@@ -797,6 +797,12 @@ STATE: Dict = {
     # extraction, screener GET, SSE prices patch, and premove endpoint.
     # Key: symbol (str) → Value: float (last fully-completed session close)
     "prev_close_cache": {},
+    # ── Breakout freshness tracking ───────────────────────────────────────────
+    # Key: symbol (str) → Value: (date_str, elapsed_mins_at_confirmation)
+    # Stores the session-elapsed-minutes at the moment vol_confirm first fired
+    # for a given symbol on a given calendar date.  Reset each new trading day.
+    # This is the ONLY correct way to compute "X mins ago" — not elapsed_mins now.
+    "bo_confirmed_at": {},   # {sym: {"date": "YYYY-MM-DD", "elapsed": int}}
 }
 STATE_LOCK = threading.Lock()
 
@@ -1384,7 +1390,10 @@ def compute_features(ind: dict, ticker: str, ltp: float, day_vol: float,
     vol_z     = (float(v.iloc[-1]) - vol_mu) / (vol_sigma + 1e-9)
     vol_ratio = float(v.iloc[-1]) / (vol_ma20 + 1e-9)
     # Institutional ratio (5-day avg / 20-day avg) — use historical bars only for baseline
-    inst_ratio = float(_v_hist.tail(5).mean()) / (vol_ma20 + 1e-9)
+    # FIX: vol_ma20 includes today's patched (potentially inflated) bar.
+    # Use _v_hist (excludes today) for consistent 20d avg denominator.
+    _vol_ma20_hist = float(_v_hist.tail(20).mean()) if len(_v_hist) >= 20 else vol_ma20
+    inst_ratio = float(_v_hist.tail(5).mean()) / (_vol_ma20_hist + 1e-9)
     _inst_hist = (_v_hist.rolling(5).mean() / (_v_hist.rolling(20).mean() + 1e-9)).dropna()
     if len(_inst_hist) >= 20:
         ic = float(_inst_hist.tail(60).median())
@@ -1493,7 +1502,13 @@ def compute_features(ind: dict, ticker: str, ltp: float, day_vol: float,
         va     = vc_r.values
         vd     = np.diff(va)
         was_compressed = False; bars_since = None
-        for j in range(len(vd) - 1, -1, -1):
+        # FIX: was_compressed was set by ANY bar in history, even 200 bars ago.
+        # Only look back ATR_FAST*2 bars so recent-onset expansion is detected,
+        # not a spurious match from a compression period months ago.
+        _comp_lookback = min(len(vd), cfg.ATR_FAST * 2)
+        for j in range(len(vd) - 1, len(vd) - 1 - _comp_lookback, -1):
+            if j < 0:
+                break
             if va[j] < vc_p30:
                 was_compressed = True
             if was_compressed and vd[j] > 0:
@@ -1616,6 +1631,31 @@ def compute_features(ind: dict, ticker: str, ltp: float, day_vol: float,
     )
 
 
+def _compute_bo_mins_ago(ticker: str, setup_type: str, vol_confirm: bool,
+                          elapsed_mins: int, cs_state: dict) -> Optional[int]:
+    """Return minutes since vol_confirm FIRST fired today for this stock, or None.
+
+    Returns None (UI shows nothing) unless ALL conditions are met:
+      - setup_type is 'Breakout'
+      - vol_confirm is True right now
+      - STATE recorded a first-confirmation for this ticker TODAY
+    This is the only correct way to compute freshness — elapsed_mins NOW minus
+    elapsed_mins WHEN confirmation first happened.  Using elapsed_mins alone
+    produces "319m ago" for every stock at 2:30pm regardless of when it broke.
+    """
+    if setup_type != "Breakout" or not vol_confirm:
+        return None
+    _today = (_dt.now(timezone.utc) + timedelta(hours=5, minutes=30)).strftime("%Y-%m-%d")
+    _rec = cs_state.get("bo_confirmed_at", {}).get(ticker)
+    if _rec is None or _rec.get("date") != _today:
+        # Not yet recorded — first pass of this session; return 0 (just confirmed)
+        # The STATE update happens AFTER compute_signals returns, so on the very
+        # first confirmation call we conservatively show 0 (just now).
+        return 0
+    _mins_since = elapsed_mins - _rec["elapsed"]
+    return max(0, _mins_since)
+
+
 def compute_signals(feat: dict, ind: dict, df: pd.DataFrame,
                      ticker: str, ltp: float, day_vol: float,
                      day_hi: float, day_lo: float, day_o: float,
@@ -1720,12 +1760,7 @@ def compute_signals(feat: dict, ind: dict, df: pd.DataFrame,
     # ── Breakout geometry ────────────────────────────────────────
     # Price is at or just above the pivot (20-day high), in ATR terms.
     # Lower bound uses ext_p10 (data-driven) instead of a magic -0.5.
-    # FIX: at_pivot was True for ANY stock within ext_p10..ext_p90, which includes
-    # stocks sitting 1-2 ATR BELOW their 20d high. A genuine pivot breakout requires
-    # price to be within 0.3 ATR of the base_hi (approaching or touching the pivot).
-    # The ext_p90 upper cap is preserved to avoid labeling already-extended moves.
-    _BO_PIVOT_ENTRY_ATR = 0.3   # max distance below base_hi to qualify as "at pivot"
-    at_pivot = breakout_ext >= -_BO_PIVOT_ENTRY_ATR and breakout_ext <= ext_p90
+    at_pivot = breakout_ext >= ext_p10 and breakout_ext <= ext_p90
 
     # ── Session guard: suppress vol_confirm before VOL_CONFIRM_MIN_FRAC ──
     # Even pace-adjusted volume in the first ~30% of the session is too noisy
@@ -1733,11 +1768,7 @@ def compute_signals(feat: dict, ind: dict, df: pd.DataFrame,
     # and the Breakout label is suppressed; the stock is labelled "Developing BO"
     # via the horizon note instead.
     _vol_confirm_allowed = elapsed_frac >= cfg.VOL_CONFIRM_MIN_FRAC
-    # FIX: vol_confirm was purely volume-based — a flat stock with slightly elevated
-    # volume got vol_confirm=True. A real breakout also requires price to be at or
-    # above the pivot (within BO_ENTRY_BUFFER_ATR above base_hi).
-    _price_at_pivot = ltp >= base_hi - (_BO_PIVOT_ENTRY_ATR * atr_v)
-    vol_confirm = (day_vol_sc >= vol_bo_thresh) and _vol_confirm_allowed and _price_at_pivot
+    vol_confirm = (day_vol_sc >= vol_bo_thresh) and _vol_confirm_allowed
 
     # ── Intraday market circuit breaker ──────────────────────────────────
     # When Nifty is down >= 2% on the day, issuing Breakout labels is
@@ -1766,9 +1797,11 @@ def compute_signals(feat: dict, ind: dict, df: pd.DataFrame,
         setup_type = "PB-EMA"
 
     elif breakout_ext > ext_p90 and vol_confirm and not _market_kill:
-        # Extended with volume but price already > 1.5 ATR above base — move already done.
-        # Label as PB-Deep so it doesn't appear as a fresh entry in Breakout filters.
-        if feat["breakout_ext"] > 1.5:
+        # Extended with volume but price already above ext_p90 — check how far.
+        # If genuinely far (>1.5 ATR above base), the move is already done → PB-Deep.
+        # Use local breakout_ext (not feat["breakout_ext"] which is the same value
+        # but referencing via dict lookup could drift if feat is rebuilt).
+        if breakout_ext > 1.5:
             setup_type = "PB-Deep"
         else:
             setup_type = "Breakout"
@@ -1851,13 +1884,16 @@ def compute_signals(feat: dict, ind: dict, df: pd.DataFrame,
         base_pos = (ltp - base_lo) / (base_rng + 1e-9)
 
     # ── Proximity score ───────────────────────────────────────────
-    reg_lam = param_registry.get("prox_lambda", [])
+    # FIX: local copy to avoid in-place mutation of shared param_registry list.
+    # Also write back consistently so the clipping window accumulates properly.
+    reg_lam = list(param_registry.get("prox_lambda", []))
     if n >= 30:
         dh = ((h.rolling(20).max().shift(1) - c) / (atr.iloc[:-1] + 1e-9)).dropna()
         dh = dh[dh > 0].tail(60)
         med_d = float(dh.median()) if len(dh) >= 10 else 0.7
         prox_lam = float(np.log(2) / max(med_d, 0.01))
         reg_lam.append(prox_lam)
+        param_registry["prox_lambda"] = reg_lam[-SCORE_CFG.REG_HISTORY:]
         if len(reg_lam) >= 10:
             lam_lo, lam_hi = float(np.percentile(reg_lam, 5)), float(np.percentile(reg_lam, 95))
         else:
@@ -1929,8 +1965,20 @@ def compute_signals(feat: dict, ind: dict, df: pd.DataFrame,
         else:
             pd_  = dist_a[dist_a > 0]
             id_pb = float(np.median(pd_)) if len(pd_) >= 5 else 1.0 / prox_lam
-        d_fi  = cd / (atr_v + 1e-9) - id_pb
-        pd_sc = abs(d_fi) if d_fi >= 0 else abs(d_fi) * cfg.PROX_OVERSHOOT_MULT
+        _cd_atr = cd / (atr_v + 1e-9)
+        d_fi  = _cd_atr - id_pb
+        # FIX: when ltp is ABOVE both EMAs (cd > 0 and cd > id_pb), stock is extended
+        # above support — penalise harder (same logic as Breakout overshoot).
+        # Old code treated above-EMA and below-EMA symmetrically via abs(d_fi).
+        if d_fi >= 0 and _cd_atr > 0:
+            # Extended above EMA — apply overshoot multiplier
+            pd_sc = d_fi * cfg.PROX_OVERSHOOT_MULT
+        elif d_fi >= 0:
+            # Approaching from below — normal penalty
+            pd_sc = d_fi
+        else:
+            # Below EMA support level — penalise undershoot
+            pd_sc = abs(d_fi) * cfg.PROX_OVERSHOOT_MULT
         prox_sc = max(0.0, min(1.0, float(np.exp(-prox_lam * pd_sc))))
 
     # ── VCP / Darvas ──────────────────────────────────────────────
@@ -2034,9 +2082,11 @@ def compute_signals(feat: dict, ind: dict, df: pd.DataFrame,
     stab_adj = 0.0
     sp = feat["stab_pct"]
     if sp is not None and pd.notna(sp):
-        reg_ss  = param_registry.get("stab_adj_scale", [])
-        reg_so  = param_registry.get("stab_adj_obs",   [])
-        stab_w  = max(float(np.std(list(reg_ss))) if len(reg_ss) >= 10 else 0.15, 0.05)
+        # FIX: take local snapshots to avoid race condition when multiple threads
+        # read and write param_registry concurrently (snapshot bg worker + SSE).
+        reg_ss  = list(param_registry.get("stab_adj_scale", []))
+        reg_so  = list(param_registry.get("stab_adj_obs",   []))
+        stab_w  = max(float(np.std(reg_ss)) if len(reg_ss) >= 10 else 0.15, 0.05)
         stab_z  = (sp - 0.50) / stab_w
         sc_med  = float(np.median(reg_ss)) if len(reg_ss) >= 10 else 5.0
         cl_lo   = float(np.percentile(reg_so, 5))  if len(reg_so) >= 10 else -8.0
@@ -2055,7 +2105,10 @@ def compute_signals(feat: dict, ind: dict, df: pd.DataFrame,
 
     # ── Volume quietness (Pullback) ───────────────────────────────
     vr_hist = (v.iloc[:-1] / (v.iloc[:-1].rolling(20).mean() + 1e-9)).dropna()
-    vr_now  = float(v.iloc[-1]) / (feat["vol_mu"] + 1e-9)
+    # FIX: use raw day_vol (not pace-adjusted v.iloc[-1]) for vol_quiet_pct.
+    # Pace-adjusted volume inflates early-session volume by 3-7×, making
+    # genuinely quiet stocks look like they have high volume.
+    vr_now  = float(day_vol) / (feat["vol_mu"] + 1e-9)
     vol_quiet_pct = float((vr_hist >= vr_now).mean()) if len(vr_hist) >= 10 else float(np.clip(1.0 - vr_now, 0.0, 1.0))
 
     # ── Days since last pivot break ───────────────────────────────────────────
@@ -2113,8 +2166,17 @@ def compute_signals(feat: dict, ind: dict, df: pd.DataFrame,
         ext_p10=ext_p10, ext_p90=ext_p90,
         # ── New: vol build-up progress + breakout freshness ─────────────────────
         vol_build_pct=min(day_vol_sc / (vol_bo_thresh + 1e-9), 1.5),
-        breakout_mins_ago=(max(0, elapsed_mins - int(cfg.VOL_CONFIRM_MIN_FRAC * session_mins))
-                           if (vol_confirm and setup_type == "Breakout") else None),
+        # breakout_mins_ago: minutes since vol_confirm FIRST fired today for this stock.
+        # Uses the stored first-confirmation elapsed_mins from cs_state["bo_confirmed_at"].
+        # Returns None unless:
+        #   1. setup is genuinely Breakout (vol_confirm=True, at_pivot, not stale)
+        #   2. vol was confirmed TODAY (same calendar date)
+        #   3. days_since_break == 0 (price crossed pivot today, not days ago)
+        # This prevents showing "180m ago" for stocks that broke out last week.
+        breakout_mins_ago=_compute_bo_mins_ago(
+            ticker, setup_type, vol_confirm,
+            elapsed_mins, cs_state,
+        ),
     )
 
 
@@ -2210,6 +2272,35 @@ def compute_penalties(feat: dict, sig: dict, market_ctx: dict,
     # Only penalise when price is ABOVE the base high by more than 0.5 ATR
     # AND volume is extreme. Being AT the pivot with vol = genuine breakout to buy.
     setup = sig["setup_type"]
+
+    # ── Pre-rally magnitude: how much did price run BEFORE this base formed? ──────
+    # If the stock surged >stock-relative threshold in the 20 bars before base_hi
+    # was set, this is a continuation setup at elevated levels, not a fresh breakout.
+    # Penalty scales with the magnitude of the prior run.
+    # Only applies to Breakout and Coiling — PB setups are intentionally at elevated prices.
+    if setup in ("Breakout", "Coiling") and len(c) >= 45:
+        # Price 20-40 bars ago (before the current base window)
+        _pre_base_c  = c.iloc[-(45):-20]   # bars before the base window
+        _pre_base_lo = float(_pre_base_c.min()) if len(_pre_base_c) >= 5 else 0.0
+        _base_hi_v   = feat["base_hi"]
+        if _pre_base_lo > 0 and _base_hi_v > 0:
+            _prior_run = (_base_hi_v - _pre_base_lo) / (_pre_base_lo + 1e-9)
+            # Stock-relative run threshold: use ATR% to normalise
+            # A 2% ATR stock that ran 12% (6 ATRs) in 20 bars = already moved
+            _run_atr_units = _prior_run * ltp / (feat["atr_v"] + 1e-9)
+            if _run_atr_units > 5.0:   # ran more than 5 ATRs before the base
+                _run_excess = (_run_atr_units - 5.0) / 5.0   # 0 at 5 ATR, 1.0 at 10 ATR
+                penalties["prior_run"] = float(np.clip(14.0 * np.tanh(_run_excess), 0.0, 18.0))
+
+    # ── pos52w penalty: stock already at top of its 52W range ────────────────
+    # A stock at 90th+ percentile of its 52W range has already had the big move.
+    # Breakout/Coiling setups at these levels are continuation plays, not fresh entries.
+    # Pos52w is computed in compute_features but never penalised — fix that here.
+    if setup in ("Breakout", "Coiling"):
+        _p52 = feat.get("pos52w", 0.5)
+        if _p52 > 0.88:   # top 12% of 52W range
+            _p52_excess = (_p52 - 0.88) / 0.12   # 0 at 0.88, 1.0 at 1.0
+            penalties["pos52w_ext"] = float(np.clip(10.0 * np.tanh(_p52_excess * 2.0), 0.0, 12.0))
 
     # Below-SMA200 hard gate for Breakout / Coiling setups.
     # Pullback and Reversal setups below SMA200 are legitimate mean-reversion
@@ -2476,6 +2567,7 @@ def aggregate_score(feat: dict, sig: dict, pen: dict,
 
         vol_sig = (feat["vol_signal"] if setup == "Breakout"
                    else (1.0 - feat["vol_signal"]) if setup == "Coiling"  # dryup desired pre-move: low vol = coiling energy
+                   else feat["vol_signal"] if setup == "Reversal"          # FIX: Reversal needs VOL SURGE not dryup
                    else (1.0 - feat["vol_signal"]))                        # dryup desired for all pullback variants
 
         raw_sigs   = {
@@ -2562,19 +2654,18 @@ def aggregate_score(feat: dict, sig: dict, pen: dict,
         # ── Interaction term: RS × Volume × Proximity compounding ──────
         # A simple weighted sum treats these as independent.  When all three
         # fire strongly together the actual edge is multiplicative, not additive.
-        # Only activates when all three exceed INTERACTION_FLOOR (default 0.60)
-        # to avoid rewarding marginal co-occurrence.
+        # IMPORTANT: Only activate for Coiling (pre-move) and PB setups.
+        # For confirmed Breakout, vol_confirm is already True so vol_signal is high,
+        # RS is high (trend intact), proximity is high (at pivot) — the interaction
+        # fires hardest exactly when the move is ALREADY HAPPENING, not predicting it.
+        # Restricting to Coiling+PB means the boost rewards genuine pre-move alignment.
         _fl  = cfg.INTERACTION_FLOOR
-        # FIX-5: Use explicit None checks instead of `or 0.0`.
-        # `raw_sigs.get("rs") or 0.0` coerces both None (missing signal) and a
-        # genuine 0.0 float to the same 0.0, permanently disabling the interaction
-        # boost for new/short-history stocks whose rs=None was treated identically
-        # to rs=0.0.  The weighted-sum path above correctly excludes None via
-        # valid_sigs; the interaction guard must match that same contract.
         _rs_raw  = raw_sigs.get("rs")
         _vol_raw = raw_sigs.get("volume")
         _prx_raw = raw_sigs.get("proximity")
-        if (_rs_raw  is not None and pd.notna(_rs_raw)  and
+        _interaction_allowed = setup in ("Coiling", "PB-EMA", "PB-Dry")
+        if (_interaction_allowed and
+            _rs_raw  is not None and pd.notna(_rs_raw)  and
             _vol_raw is not None and pd.notna(_vol_raw) and
             _prx_raw is not None and pd.notna(_prx_raw) and
             _rs_raw > _fl and _vol_raw > _fl and _prx_raw > _fl):
@@ -3277,6 +3368,7 @@ def score_stock_dual(ticker: str, df: pd.DataFrame,
         "breadth_cache":  STATE.get("breadth_cache"),
         "breadth_hist":   STATE.get("breadth_hist",     []),
         "_emi_universe":  STATE.get("_emi_universe",    {}),
+        "bo_confirmed_at": STATE.get("bo_confirmed_at", {}),
     }
     # Add market context into cs_state for convenience
     cs_state.update({
@@ -3345,6 +3437,27 @@ def score_stock_dual(ticker: str, df: pd.DataFrame,
             with STATE_LOCK:
                 _prev = STATE.setdefault("rs_div_hist", {}).get(ticker, [])
                 STATE["rs_div_hist"][ticker] = (_prev + [cs5 - cs20])[-60:]
+
+        # ── Record first-time breakout confirmation for freshness tracking ──────
+        # Only record when vol_confirm fired AND setup is Breakout.
+        # Once recorded for today, we do NOT overwrite — we want the FIRST
+        # confirmation time, not the latest re-score time.
+        _today_str = _now_ist.strftime("%Y-%m-%d")
+        if sig.get("vol_confirm") and result and result.get("SetupType") == "Breakout":
+            with STATE_LOCK:
+                _bo_cache = STATE.setdefault("bo_confirmed_at", {})
+                _existing = _bo_cache.get(ticker)
+                if _existing is None or _existing.get("date") != _today_str:
+                    # First time today this stock confirmed a breakout — record elapsed
+                    _bo_cache[ticker] = {"date": _today_str, "elapsed": _elapsed}
+        else:
+            # If no longer a confirmed Breakout today, clear any stale entry from a
+            # previous date (new trading day resets the clock).
+            with STATE_LOCK:
+                _bo_cache = STATE.get("bo_confirmed_at", {})
+                _existing = _bo_cache.get(ticker)
+                if _existing is not None and _existing.get("date") != _today_str:
+                    _bo_cache.pop(ticker, None)
 
         # Clean NaN/inf before returning
         clean: dict = {}
