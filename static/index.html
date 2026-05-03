@@ -151,6 +151,7 @@ tr:hover td { background: #140e00; color: var(--amber2); }
 .action-hold { display:inline-block; font-size:.52rem; font-weight:800; letter-spacing:.08em; padding:2px 6px; background:#0d0d0d; color:var(--muted);  border:1px solid #2a2a2a;  border-radius:1px; }
 .sig { display: inline-block; width: 6px; height: 6px; border-radius: 50%; margin-right: 2px; vertical-align: middle; }
 .sig-g { background: var(--green); }
+.sig-r { background: var(--red); box-shadow: 0 0 3px var(--red); }
 .sig-n { background: #2a2a2a; }
 .empty-state { text-align: center; padding: 50px; color: var(--muted); font-size: .68rem; }
 
@@ -326,6 +327,11 @@ tr.row-updated td { color: var(--green2) !important; animation: none; }
         <button class="btn-sm" onclick="runCalibSnapshot()">📸 Log All Signals to DB</button>
         <button class="btn-sm" onclick="updateForwardReturns()">↻ Update Forward Returns</button>
         <button class="btn-sm" onclick="openCalibModal()">📊 View Calibration Stats</button>
+        <button class="btn-sm" id="resetCalibBtn" onclick="resetCalibration()"
+          style="color:var(--red);border-color:#3a0000;margin-top:4px"
+          title="Wipe ALL calibration data — use after fixing scoring bugs">
+          🗑 Reset Calibration DB
+        </button>
         <div class="flash" id="calibFlash"></div>
       </div>
 
@@ -514,6 +520,7 @@ const THRESH = {
   STAB_LOW:        0.4,   // Stability < this → red
   WIN_RATE_GOOD:    55,   // Calibration win rate ≥ → green
   WIN_RATE_MID:     45,   // Calibration win rate ≥ → amber
+  FORWARD_RETURN_DAYS: 5, // mirrors ScoreConfig.FORWARD_RETURN_DAYS — used for staleness threshold
   PENALTY_HIGH:      8,   // SoftPenalty > this → red
   PENALTY_MID:       4,   // SoftPenalty > this → amber
   RR_PREMIUM:     1.25,   // rrFmt: ratio vs median for green (25% above)
@@ -524,6 +531,15 @@ const THRESH = {
   // Overview panel direct comparisons (mirror backend ScoreConfig)
   OVERVIEW_PENALTY_HIGH: 5,  // SoftPenalty > this → red in overview tile
   OVERVIEW_BO_PROB_HIGH: 0.6,// BreakoutProb > this → green in overview tile
+  // Coiling thresholds — mirror backend ScoreConfig.COIL_SETUP_THRESH / COIL_STRONG_THRESH
+  COIL_SETUP_THRESH:   52,   // mirrors ScoreConfig.COIL_SETUP_THRESH
+  COIL_STRONG_THRESH:  65,   // "COIL" tag threshold (strong coil for tickerCell tag)
+  COIL_SIGNAL_THRESH:  52,   // signalDots: CoilingScore ≥ this → coiling dot lit (mirrors COIL_SETUP_THRESH)
+  // Stale breakout display thresholds — mirror backend STALE_BO_DAYS_NORM ramp
+  STALE_BO_RED_DAYS:    4,   // DaysSinceBreak ≥ this → red
+  STALE_BO_AMBER_DAYS:  2,   // DaysSinceBreak ≥ this → amber
+  // Coil streak display threshold
+  COIL_STREAK_MIN_DAYS: 3,   // CoilStreakDays ≥ this → cyan streak badge
 };
 
 // ── UI timing / retry constants ───────────────────────────────────
@@ -541,7 +557,7 @@ const UI_CFG = {
 let _rows = [], _filteredRows = [], _sortCol = 'CompositeRank', _sortAsc = false;
 let _sectorFilter = '', _pollInterval = null;
 let _currentStock = null, _chartLoaded = false, _newsLoaded = false, _wlLoaded = false, _calibLoaded = false;
-let _currentView = 'core';  // 'core' | 'trade' | 'factor'
+let _currentView = localStorage.getItem('monarch_view') || 'core';  // 'core' | 'trade' | 'factor'
 let STATE_extraction_running = false; // tracks whether extraction is in progress for SSE fallback logic
 
 // Score percentile thresholds — computed LIVE from actual data, never hardcoded.
@@ -550,6 +566,12 @@ let _sP75 = 70, _sP50 = 50, _sP25 = 35;
 
 // RR median — computed live from filtered rows. Never hardcoded.
 let _rrMedian = 2.0;
+
+// Restore persisted sort col (default stays as CompositeRank if nothing saved)
+{
+  const _savedSort = localStorage.getItem('monarch_sort');
+  if (_savedSort) _sortCol = _savedSort;
+}
 
 // ── COLUMN DEFINITIONS ──────────────────────────────────────────
 // Each column: { key, label, fmt, align, tip }
@@ -584,7 +606,6 @@ const COLS = {
   RS_Accel:    { label:'RS Acc',    fmt: r => fv(r.RS_Accel,2),                            align:'R' },
   AccelScore:  { label:'Accel%',    fmt: r => `${fv(r.AccelScore,1)}%`,                    align:'R' },
   // Breakout metrics
-  BreakoutProb:     { label:'Compress%', fmt: r => boPctFmt(r.CompressionScore ?? r.BreakoutProb), align:'R' },
   CompressionScore: { label:'Compress%', fmt: r => boPctFmt(r.CompressionScore ?? r.BreakoutProb), align:'R' },
   SignalPersist:{ label:'SigCov',    fmt: r => r.SignalPersist != null ? `${fv(r.SignalPersist*100,0)}%` : '—', align:'R' },
   // Volume
@@ -614,7 +635,7 @@ const COLS = {
     if (r.CoilingScore == null) return '—';
     const v = parseFloat(r.CoilingScore);
     const c = v >= 70 ? 'var(--green2)' : v >= 55 ? 'var(--green)' : v >= 40 ? 'var(--amber)' : 'var(--dim)';
-    const streak = r.CoilStreakDays >= 3 ? `<span style="color:var(--cyan);font-size:.52rem"> ${r.CoilStreakDays}d</span>` : '';
+    const streak = r.CoilStreakDays >= THRESH.COIL_STREAK_MIN_DAYS ? `<span style="color:var(--cyan);font-size:.52rem"> ${r.CoilStreakDays}d</span>` : '';
     return `<span style="color:${c};font-weight:700">${fv(v,0)}</span>${streak}`;
   }, align:'R' },
   CoilStreakDays:{ label:'Streak',   fmt: r => r.CoilStreakDays > 0 ? `<span style="color:var(--cyan)">${r.CoilStreakDays}d</span>` : '—', align:'R' },
@@ -671,7 +692,7 @@ const COLS = {
     if (r.DaysSinceBreak == null) return '—';
     const d = r.DaysSinceBreak;
     if (d === 0) return '<span style="color:var(--green)">fresh</span>';
-    const c = d >= 4 ? 'var(--red)' : d >= 2 ? 'var(--amber)' : 'var(--dim)';
+    const c = d >= THRESH.STALE_BO_RED_DAYS ? 'var(--red)' : d >= THRESH.STALE_BO_AMBER_DAYS ? 'var(--amber)' : 'var(--dim)';
     return `<span style="color:${c}" title="Price crossed pivot ${d} bars ago">${d}d ago</span>`;
   }, align:'R' },
   WeeklyTrendUp: { label:'Wk↑',    fmt: r => r.WeeklyTrendUp == null ? '—' : r.WeeklyTrendUp ? '<span style="color:var(--green)">✔</span>' : '<span style="color:var(--red)">✗</span>', align:'R' },
@@ -754,6 +775,10 @@ const FM = {
 // ════════════════════════════════════════════════════
 // FORMAT HELPERS (all data-driven, no hardcoded thresholds)
 // ════════════════════════════════════════════════════
+function esc(s) {
+  // Escape server-supplied strings before injecting via innerHTML
+  return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+}
 function fv(v, dec=1) {
   if (v == null || v === '' || (typeof v === 'number' && isNaN(v))) return '—';
   return parseFloat(v).toFixed(dec);
@@ -840,6 +865,7 @@ function stabFmt(v) {
 // barFmt: coloured value with its max denominator (shows e.g. "7.2/10")
 function barFmt(v, max) {
   if (v == null) return '—';
+  if (!max) return fv(v, 1);   // guard: zero max would produce Infinity → always green
   const pct = Math.min((parseFloat(v) / max) * 100, 100);
   const c = pct >= THRESH.BAR_PCT_HIGH ? 'var(--green)' : pct >= THRESH.BAR_PCT_MID ? 'var(--amber)' : 'var(--red)';
   return `<span style="color:${c}">${fv(v,1)}</span><span style="color:var(--dim);font-size:.54rem">/${max}</span>`;
@@ -907,14 +933,14 @@ function tickerCell(r) {
     r.DarvasInBox  ? '<span class="tag tag-bo">BO</span>'   : '',
     r.OI_Buildup > 0 ? '<span class="tag tag-oi">OI</span>' : '',
     r.Sweep        ? '<span class="tag tag-rev">SW</span>'  : '',
-    // Coiling tag: green if setup is Coiling OR CoilingScore ≥ 65
-    (r.SetupType === 'Coiling' || (r.CoilingScore != null && r.CoilingScore >= 65))
+    // Coiling tag: green if setup is Coiling OR CoilingScore ≥ COIL_STRONG_THRESH
+    (r.SetupType === 'Coiling' || (r.CoilingScore != null && r.CoilingScore >= THRESH.COIL_STRONG_THRESH))
       ? '<span class="tag tag-vcp" style="background:#001a00;color:var(--green2)">COIL</span>' : '',
     // VolClimax: red exhaustion warning — not a buy signal
     r.VolClimax
       ? '<span class="tag" style="background:#1a0000;color:var(--red);border:1px solid var(--red)">CLMX</span>' : '',
   ].join('');
-  return `<span class="ticker-cell" data-ticker="${(r.Ticker||'').replace(/"/g,'')}">${r.Ticker}${tags}</span>`;
+  return `<span class="ticker-cell" data-ticker="${esc(r.Ticker||'')}">${esc(r.Ticker)}${tags}</span>`;
 }
 function signalDots(r) {
   return [
@@ -923,10 +949,13 @@ function signalDots(r) {
     { t:'CLVAccum',     v: r.CLVAccum  > 0 },
     { t:'RSDivergence', v: r.RSDivergence > 0 },
     { t:'VCP_Detected', v: r.VCP_Detected },
-    { t:'Coiling',      v: r.SetupType === 'Coiling' || (r.CoilingScore != null && r.CoilingScore >= 58) },
+    { t:'Coiling',      v: r.SetupType === 'Coiling' || (r.CoilingScore != null && r.CoilingScore >= THRESH.COIL_SIGNAL_THRESH) },
     { t:'WeeklyTrend ↑', v: r.WeeklyTrendUp !== false },  // grey only when explicitly false
-    { t:'VolClimax ⚠',  v: !r.VolClimax },   // green = NOT in climax; red = climax warning
-  ].map(d => `<span class="sig ${d.v ? 'sig-g' : 'sig-n'}" title="${d.t}"></span>`).join('');
+    { t:'VolClimax ⚠',  v: r.VolClimax, warn: true },
+  ].map(d => {
+    const cls = d.warn ? (d.v ? 'sig-r' : 'sig-n') : (d.v ? 'sig-g' : 'sig-n');
+    return `<span class="sig ${cls}" title="${d.t}"></span>`;
+  }).join('');
 }
 function actionBadge(r) {
   const a = r.Action;
@@ -982,6 +1011,8 @@ let _sseReconnectMs = UI_CFG.SSE_RECONNECT_BASE_MS;  // grows on each failed att
 
 function _startSSE() {
   if (_sse) { _sse.close(); _sse = null; }
+  // Clear any fallback poll interval — SSE takes over
+  if (_pollInterval) { clearInterval(_pollInterval); _pollInterval = null; }
   const dot = document.getElementById('sseDot');
   if (dot) dot.className = 'sse-dot polling';
 
@@ -990,6 +1021,9 @@ function _startSSE() {
   _sse.addEventListener('open', () => {
     if (dot) dot.className = 'sse-dot live';
     _sseReconnectMs = UI_CFG.SSE_RECONNECT_BASE_MS;  // reset backoff on success
+    // Immediately sync running state so the SSE error handler has correct context
+    // even before the first 'status' event arrives (important after page reload).
+    fetch('/api/extraction/status').then(r => r.json()).then(_handleExtractionStatus).catch(() => {});
   });
 
   _sse.addEventListener('status', e => {
@@ -1072,10 +1106,10 @@ function _startSSE() {
     // Exponential backoff: double the wait each failure, capped at SSE_RECONNECT_MAX_MS
     const reconnectIn = _sseReconnectMs;
     _sseReconnectMs = Math.min(_sseReconnectMs * UI_CFG.SSE_RECONNECT_FACTOR, UI_CFG.SSE_RECONNECT_MAX_MS);
-    setTimeout(() => {
-      if (!_pollInterval && STATE_extraction_running) _startIntervalPoll();
-      setTimeout(_startSSE, reconnectIn);
-    }, UI_CFG.SSE_RECONNECT_BASE_MS);
+    // Start fallback poll immediately; schedule SSE reconnect after backoff.
+    // _startSSE will clear the poll interval when it reconnects successfully.
+    if (!_pollInterval && STATE_extraction_running) _startIntervalPoll();
+    setTimeout(_startSSE, reconnectIn);
   });
 }
 
@@ -1230,22 +1264,22 @@ function renderMkt(d) {
   const bp   = d.breadth != null ? (d.breadth * 100).toFixed(1) + '%' : '—';
   const lr   = d.last_refresh ? new Date(d.last_refresh * 1000).toLocaleTimeString('en-IN', { hour:'2-digit', minute:'2-digit' }) : '—';
   document.getElementById('mktContent').innerHTML = [
-    ['Regime',    `<span class="${rc}">${reg}</span>`],
-    ['VIX',       vix],
+    ['Regime',    `<span class="${rc}">${esc(reg)}</span>`],
+    ['VIX',       esc(vix)],
     ['Mkt OK',    d.market_ok   ? '<span class="bull">YES</span>' : '<span class="bear">NO</span>'],
     ['N50>50DMA', d.nifty_above_50dma ? '<span class="bull">YES</span>' : '<span class="bear">NO</span>'],
     ['VIX↓',     d.vix_falling ? '<span class="bull">YES</span>' : '<span class="bear">NO</span>'],
-    ['Breadth',   bp],
-    ['Stocks',    d.total || 0],
-    ['LiveQ',     d.live_quotes || 0],
-    ['Refreshed', lr],
-  ].map(([k, v]) => `<div class="mkt-row"><span class="mkt-key">${k}</span><span class="mkt-val">${v}</span></div>`).join('');
+    ['Breadth',   esc(bp)],
+    ['Stocks',    esc(d.total ?? 0)],
+    ['LiveQ',     esc(d.live_quotes ?? 0)],
+    ['Refreshed', esc(lr)],
+  ].map(([k, v]) => `<div class="mkt-row"><span class="mkt-key">${esc(k)}</span><span class="mkt-val">${v}</span></div>`).join('');
 
   if (d.sector_returns && Object.keys(d.sector_returns).length) {
     document.getElementById('sectorSection').style.display = '';
     document.getElementById('sectorContent').innerHTML = Object.entries(d.sector_returns)
       .sort((a,b) => b[1] - a[1]).slice(0, 12)
-      .map(([k,v]) => `<div class="mkt-row"><span class="mkt-key">${k}</span><span class="mkt-val ${v > 0 ? 'bull' : 'bear'}">${v > 0 ? '+' : ''}${v.toFixed(1)}%</span></div>`).join('');
+      .map(([k,v]) => `<div class="mkt-row"><span class="mkt-key">${esc(k)}</span><span class="mkt-val ${v > 0 ? 'bull' : 'bear'}">${v > 0 ? '+' : ''}${fv(v,1)}%</span></div>`).join('');
   }
 }
 
@@ -1257,7 +1291,7 @@ function renderPills() {
   const pillsEl = document.getElementById('sectorPills');
   pillsEl.innerHTML =
     `<span class="sector-pill ${!_sectorFilter ? 'active' : ''}" data-sector="">ALL</span>` +
-    sects.map(s => `<span class="sector-pill ${_sectorFilter === s ? 'active' : ''}" data-sector="${s.replace(/"/g,'&quot;')}">${s}</span>`).join('');
+    sects.map(s => `<span class="sector-pill ${_sectorFilter === s ? 'active' : ''}" data-sector="${esc(s)}">${esc(s)}</span>`).join('');
 }
 // Delegate sector pill clicks — avoids apostrophe-in-sector-name JS injection via onclick=""
 document.getElementById('sectorPills').addEventListener('click', e => {
@@ -1333,6 +1367,7 @@ function setSort(col, asc) {
   }
   _sortCol = col;
   _sortAsc = asc;
+  localStorage.setItem('monarch_sort', col);
   // Sync dropdown
   const sel = document.getElementById('sortSelect');
   if (sel && [...sel.options].some(o => o.value === col)) sel.value = col;
@@ -1359,6 +1394,7 @@ function applyClientSort() {
 // ════════════════════════════════════════════════════
 function switchView(name) {
   _currentView = name;
+  localStorage.setItem('monarch_view', name);
   const tabNames = ['core','trade','factor','coiling','premove'];
   document.querySelectorAll('.view-tab').forEach((t, i) =>
     t.classList.toggle('active', tabNames[i] === name));
@@ -1554,8 +1590,8 @@ function renderOverview(r) {
     // CoilingScore — shown prominently; coloured green when strong, amber when building
     ['Coiling Score',r.CoilingScore!=null?fv(r.CoilingScore,0)+'/100':'—',
       r.CoilingScore>=70?'var(--green2)':r.CoilingScore>=55?'var(--green)':r.CoilingScore>=40?'var(--amber)':'var(--dim)'],
-    ['Coil Streak',  r.CoilStreakDays>0?r.CoilStreakDays+'d':'—',      r.CoilStreakDays>=3?'var(--cyan)':'var(--dim)'],
-    ['Days Since BO', r.DaysSinceBreak===0?'Fresh now':r.DaysSinceBreak!=null?(r.DaysSinceBreak+'d ago'):'—', r.DaysSinceBreak===0?'var(--green)':r.DaysSinceBreak>=4?'var(--red)':r.DaysSinceBreak>=2?'var(--amber)':'var(--dim)'],
+    ['Coil Streak',  r.CoilStreakDays>0?r.CoilStreakDays+'d':'—',      r.CoilStreakDays>=THRESH.COIL_STREAK_MIN_DAYS?'var(--cyan)':'var(--dim)'],
+    ['Days Since BO', r.DaysSinceBreak===0?'Fresh now':r.DaysSinceBreak!=null?(r.DaysSinceBreak+'d ago'):'—', r.DaysSinceBreak===0?'var(--green)':r.DaysSinceBreak>=THRESH.STALE_BO_RED_DAYS?'var(--red)':r.DaysSinceBreak>=THRESH.STALE_BO_AMBER_DAYS?'var(--amber)':'var(--dim)'],
     ['Horizon',      r.Horizon||'—',                                   'var(--amber2)'],
     ['RSI',          fv(r.RSI7,1),                                     r.RSI7>THRESH.RSI_OVERBOUGHT?'var(--red)':r.RSI7<THRESH.RSI_OVERSOLD?'var(--blue)':''],
     ['ATR%',         r['ATR%']!=null?fv(r['ATR%'],2)+'%':'—',         ''],
@@ -1671,8 +1707,8 @@ function renderTrade(r) {
     <div class="note-box amber"><div class="note-box-label">Entry Note</div><div class="note-box-text">${r.EntryNote||'—'}</div></div>
     <div class="note-box blue"><div class="note-box-label">Horizon Note</div><div class="note-box-text">${r.HorizonNote||'—'}</div></div>
     <div style="margin-top:10px;display:flex;gap:7px;align-items:center;flex-wrap:wrap">
-      <button class="btn-inline" onclick="logSignal('${r.Ticker}')">📝 Log to DB</button>
-      <button class="btn-inline sec" onclick="addWLDirect('${r.Ticker}')">+ Watchlist</button>
+      <button class="btn-inline" data-log-ticker="${esc(r.Ticker||'')}">📝 Log to DB</button>
+      <button class="btn-inline sec" data-wl-ticker="${esc(r.Ticker||'')}">+ Watchlist</button>
       <span class="flash" id="tradeFlash"></span>
     </div>`;
 }
@@ -1705,6 +1741,8 @@ let _chartTF = '1d';           // active timeframe
 let _chartAllBars = [];        // ALL bars from server for the active TF
 let _chartNewsArts = [];       // news articles for the current stock
 let _chartNewsTicker = null;
+let _chartBaseHi = null;       // base resistance line from score cache
+let _chartBaseLo = null;       // base support line from score cache
 
 // Timeframe → how many daily bars to display (0 = all)
 const TF_BARS = { '5d':5, '15d':15, '1mo':22, '3mo':66, '6mo':132, '1y':252, 'all':0 };
@@ -1736,6 +1774,8 @@ async function loadChart(ticker) {
       fetch(`/api/news?symbol=${encodeURIComponent(ticker)}`).then(r => r.json()).catch(() => ({ articles: [] }))
     ]);
     _chartAllBars  = chartData.bars || [];
+    _chartBaseHi   = chartData.base_hi || null;
+    _chartBaseLo   = chartData.base_lo || null;
     _chartNewsArts = (newsData.articles || []).filter(a => a.pub);
     renderChartFromCache();
   } catch(e) {
@@ -1754,7 +1794,7 @@ function renderChartFromCache() {
   const barsLimit = TF_BARS[_chartTF] || 0;
   const bars = barsLimit > 0 ? _chartAllBars.slice(-barsLimit) : _chartAllBars;
   const showNews = document.getElementById('chartNewsToggle')?.checked ?? true;
-  renderChart({ bars, symbol: _chartNewsTicker }, showNews ? _chartNewsArts : []);
+  renderChart({ bars, symbol: _chartNewsTicker, base_hi: _chartBaseHi, base_lo: _chartBaseLo }, showNews ? _chartNewsArts : []);
 }
 
 function renderChart(d, newsArts) {
@@ -1764,7 +1804,9 @@ function renderChart(d, newsArts) {
   const W = 960, H = 300, RSI_H = 60, VHGT = 55, PAD = { l:56, r:28, t:10, b:20 };
   const n = bars.length;
   const highs = bars.map(b => b.high), lows = bars.map(b => b.low), vols = bars.map(b => b.volume || 0);
-  const minP = Math.min(...lows) * 0.997, maxP = Math.max(...highs) * 1.003;
+  const baseHi = d.base_hi || null, baseLo = d.base_lo || null;
+  const allPrices = [...highs, ...lows, ...(baseHi ? [baseHi] : []), ...(baseLo ? [baseLo] : [])];
+  const minP = Math.min(...allPrices) * 0.997, maxP = Math.max(...allPrices) * 1.003;
   const maxV = Math.max(...vols) || 1;
   const cW   = Math.max((W - PAD.l - PAD.r) / n, 1.5);
   const px   = i  => PAD.l + i * cW + cW * 0.5;
@@ -1881,6 +1923,8 @@ function renderChart(d, newsArts) {
       <span style="color:#9966cc">— EMA50</span>
       <span style="color:var(--green)">■ Vol+</span>
       <span style="color:var(--red)">■ Vol−</span>
+      ${baseHi ? `<span style="color:var(--cyan)">— Base Hi (${baseHi.toFixed(0)})</span>` : ''}
+      ${baseLo ? `<span style="color:var(--purple)">— Base Lo (${baseLo.toFixed(0)})</span>` : ''}
       <span style="margin-left:auto;color:var(--dim)">${d.symbol} · ${bars.length} bars · ${bars[0]?.time||''}→${bars[n-1]?.time||''}</span>
     </div>
     <div style="overflow-x:auto;-webkit-overflow-scrolling:touch">
@@ -1898,6 +1942,11 @@ function renderChart(d, newsArts) {
         <!-- Last price line -->
         <line x1="${PAD.l}" y1="${lpy}" x2="${W-PAD.r}" y2="${lpy}" stroke="#ff8c0055" stroke-width=".7" stroke-dasharray="3,2"/>
         <text x="${W-PAD.r+2}" y="${+lpy+3}" fill="var(--amber)" font-size="8">₹${bars[n-1].close?.toFixed(0)}</text>
+        <!-- Base Hi / Base Lo actionable lines -->
+        ${baseHi ? `<line x1="${PAD.l}" y1="${py(baseHi).toFixed(1)}" x2="${W-PAD.r}" y2="${py(baseHi).toFixed(1)}" stroke="#00ccff88" stroke-width="1" stroke-dasharray="5,3"/>
+        <text x="${PAD.l-5}" y="${+py(baseHi).toFixed(1)+3}" fill="var(--cyan)" font-size="7.5" text-anchor="end">BHi ${baseHi.toFixed(0)}</text>` : ''}
+        ${baseLo ? `<line x1="${PAD.l}" y1="${py(baseLo).toFixed(1)}" x2="${W-PAD.r}" y2="${py(baseLo).toFixed(1)}" stroke="#cc88ff66" stroke-width="1" stroke-dasharray="5,3"/>
+        <text x="${PAD.l-5}" y="${+py(baseLo).toFixed(1)+3}" fill="var(--purple)" font-size="7.5" text-anchor="end">BLo ${baseLo.toFixed(0)}</text>` : ''}
         <!-- X labels -->
         ${xLbls}
         <!-- Price axes -->
@@ -1966,7 +2015,8 @@ function renderWL(syms, ticker) {
   const inList = syms.some(s => s.symbol === ticker);
   document.getElementById('watchlistContent').innerHTML = `
     <div style="display:flex;gap:7px;align-items:center;margin-bottom:12px;flex-wrap:wrap">
-      <button class="btn-inline ${inList ? 'sec' : ''}" onclick="toggleWL('${ticker}',${inList})">
+      <button class="btn-inline ${inList ? 'sec' : ''}"
+        data-toggle-ticker="${esc(ticker)}" data-in-list="${inList ? '1' : '0'}">
         ${inList ? '✓ Remove from Watchlist' : '+ Add to Watchlist'}
       </button>
       <input id="wlNote" class="ctrl-input" placeholder="Optional note…" style="margin:0;flex:1;max-width:210px">
@@ -1981,6 +2031,13 @@ function renderWL(syms, ticker) {
            <button class="wl-del" data-delsym="${s.symbol.replace(/"/g,'')}">✕</button>
          </div>`).join('')}</div>`
       : '<div style="color:var(--dim);font-size:.61rem">Watchlist is empty.</div>'}`;
+  // Toggle WL button — uses data attributes to avoid XSS from inline onclick strings
+  const toggleBtn = document.getElementById('watchlistContent').querySelector('[data-toggle-ticker]');
+  if (toggleBtn) {
+    toggleBtn.addEventListener('click', () => {
+      toggleWL(toggleBtn.dataset.toggleTicker, toggleBtn.dataset.inList === '1');
+    });
+  }
   const wlList = document.getElementById('wlList');
   if (wlList) {
     wlList.addEventListener('click', e => {
@@ -2030,7 +2087,7 @@ async function loadCalib(ticker) {
       Forward 5D returns are filled later via sidebar "↻ Update Forward Returns".
     </p>
     <div style="display:flex;gap:7px;align-items:center;margin-bottom:14px;flex-wrap:wrap">
-      <button class="btn-inline" onclick="logSignal('${ticker}')">📝 Log Signal to DB</button>
+      <button class="btn-inline" data-log-ticker="${esc(ticker||'')}">📝 Log Signal to DB</button>
       <span class="flash" id="calibSignalFlash"></span>
     </div>
     <div class="calib-title">Universe-wide Calibration Stats (from DB)</div>
@@ -2051,6 +2108,49 @@ function renderCalibStats(targetId, d) {
         4. Repeat daily to build a meaningful dataset</div>`;
     return;
   }
+
+  // ── Adapted weights panel ──────────────────────────────────────────────
+  const WEIGHT_LABELS = {
+    rs:'RS', rs_sect:'RS Sect', momentum:'Momentum', volume:'Volume',
+    coil:'Coil', ma:'MA', proximity:'Proximity', vcp:'VCP',
+    darvas:'Darvas', micro:'Micro'
+  };
+  let weightsHtml = '';
+  if (d.adapted_weights && d.weight_correlations) {
+    const aw = d.adapted_weights;
+    const wc = d.weight_correlations;
+    const keys = Object.keys(WEIGHT_LABELS);
+    // Sort by absolute correlation descending
+    keys.sort((a,b) => Math.abs(wc[b]||0) - Math.abs(wc[a]||0));
+    const maxW = Math.max(...keys.map(k => aw[k]||0));
+    const rows = keys.map(k => {
+      const w = (aw[k]||0), corr = (wc[k]||0);
+      const corrColor = corr > 0.05 ? 'var(--green)' : corr < -0.05 ? 'var(--red)' : 'var(--dim)';
+      const corrSign  = corr > 0 ? '+' : '';
+      const barW      = Math.round((w / maxW) * 80);
+      return `<tr>
+        <td style="color:var(--amber2)">${WEIGHT_LABELS[k]||k}</td>
+        <td style="color:${corrColor};text-align:right">${corrSign}${corr.toFixed(3)}</td>
+        <td style="text-align:right">${(w*100).toFixed(2)}%</td>
+        <td><div style="background:var(--amber);height:6px;width:${barW}px;border-radius:2px"></div></td>
+      </tr>`;
+    }).join('');
+    weightsHtml = `
+      <div style="color:var(--amber);font-size:.60rem;font-weight:700;margin:12px 0 4px;letter-spacing:.08em">
+        ADAPTED WEIGHTS (${d.count} rows)
+        <span style="color:var(--dim);font-weight:400;font-size:.56rem"> — auto-tuned from Spearman(component, fwd_ret)</span>
+      </div>
+      <table class="q-table">
+        <thead><tr><th>Component</th><th>Spearman r</th><th>Weight</th><th>Rel size</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>`;
+  } else {
+    weightsHtml = `<div style="color:var(--dim);font-size:.58rem;margin-top:10px">
+      Weight adaptation not yet active — needs ≥${30} rows with both signals_json and forward_ret.
+      Rows logged before this fix will not have signals_json; log new snapshots after updating.
+    </div>`;
+  }
+
   document.getElementById(targetId).innerHTML = `
     <div class="stat-grid">
       <div class="stat-card"><div class="stat-label">Total Records</div><div class="stat-val">${d.count}</div></div>
@@ -2061,6 +2161,11 @@ function renderCalibStats(targetId, d) {
       <div class="stat-card"><div class="stat-label">Score p25/p50/p75</div>
         <div class="stat-val" style="font-size:.66rem">${d.score_percentiles?.p25} / ${d.score_percentiles?.p50} / ${d.score_percentiles?.p75}</div></div>
     </div>
+    ${d.days_since_update != null ? (() => {
+      const dsu = d.days_since_update;
+      const staleCls = dsu > THRESH.FORWARD_RETURN_DAYS * 2 ? 'color:var(--red)' : dsu > THRESH.FORWARD_RETURN_DAYS ? 'color:var(--amber)' : 'color:var(--green)';
+      return `<div style="font-size:.57rem;${staleCls};margin-bottom:8px">⏱ Last updated: ${dsu === 0 ? 'today' : dsu + 'd ago'} · Hit-rates ${dsu > THRESH.FORWARD_RETURN_DAYS * 4 ? 'may be stale — run ↻ Update Returns' : 'are fresh'}</div>`;
+    })() : ''}
     <table class="q-table">
       <thead><tr><th>Quartile</th><th>Count</th><th>Avg 5D Ret%</th><th>Win Rate%</th></tr></thead>
       <tbody>${Object.entries(d.quartiles||{}).map(([q,v]) => `<tr>
@@ -2068,7 +2173,8 @@ function renderCalibStats(targetId, d) {
         <td style="color:${v.avg_ret>0?'var(--green)':'var(--red)'}">${(v.avg_ret*100).toFixed(2)}%</td>
         <td style="color:${v.win_rate>=THRESH.WIN_RATE_GOOD?'var(--green)':v.win_rate>=THRESH.WIN_RATE_MID?'var(--amber)':'var(--red)'}">${v.win_rate}%</td>
       </tr>`).join('')}</tbody>
-    </table>`;
+    </table>
+    ${weightsHtml}`;
 }
 async function logSignal(ticker) {
   const f = document.getElementById('calibSignalFlash') || document.getElementById('tradeFlash');
@@ -2091,41 +2197,21 @@ async function logAllSignalsMain() {
   btn.disabled = true;
   btn.classList.add('saving');
   btn.textContent = '⟳ Saving…';
-  flash.textContent = 'Queuing snapshot…';
+  flash.textContent = 'Saving snapshot…';
   flash.className = 'flash';
   try {
+    // /api/calibration/snapshot runs synchronously via run_in_executor and
+    // returns {"logged": N} directly — no queued/polling path needed.
     const d = await fetch('/api/calibration/snapshot', { method: 'POST' }).then(r => r.json());
     if (d.error) {
       flash.textContent = '✘ ' + d.error;
       flash.className = 'flash err';
       return;
     }
-    // Backend queued the job — poll for real result
-    if (d.queued) {
-      flash.textContent = '⟳ Saving ' + d.logged + ' signals…';
-      flash.className = 'flash';
-      // Poll /api/calibration/snapshot/status until done
-      for (let i = 0; i < 30; i++) {
-        await new Promise(r => setTimeout(r, 2000));
-        const s = await fetch('/api/calibration/snapshot/status').then(r => r.json());
-        if (s.status === 'done') {
-          if (s.errors > 0) {
-            flash.textContent = `✔ Logged ${s.logged} signals (${s.errors} errors: ${s.error_detail || ''})`;
-            flash.className = 'flash err';
-          } else {
-            flash.textContent = `✔ Logged ${s.logged} signals.`;
-            flash.className = 'flash ok';
-            const sf = document.getElementById('calibFlash');
-            if (sf) { sf.textContent = flash.textContent; sf.className = 'flash ok'; }
-          }
-          break;
-        }
-        flash.textContent = `⟳ Saving… (${i*2}s)`;
-      }
-    } else {
-      flash.textContent = '✔ Logged ' + d.logged + ' signals.';
-      flash.className = 'flash ok';
-    }
+    flash.textContent = '✔ Logged ' + d.logged + ' signals.';
+    flash.className = 'flash ok';
+    const sf = document.getElementById('calibFlash');
+    if (sf) { sf.textContent = flash.textContent; sf.className = 'flash ok'; }
   } catch(e) {
     flash.textContent = '✘ ' + e.message;
     flash.className = 'flash err';
@@ -2166,6 +2252,33 @@ async function openCalibModal() {
   }
 }
 
+async function resetCalibration() {
+  const f = document.getElementById('calibFlash');
+  const btn = document.getElementById('resetCalibBtn');
+  if (!confirm(
+    'DELETE all calibration data?\n\n' +
+    'This wipes signal logs, forward returns, win-rates, and coil streaks.\n' +
+    'Use this after fixing scoring bugs to start fresh.\n\n' +
+    'This cannot be undone.'
+  )) return;
+  btn.disabled = true;
+  f.textContent = 'Resetting…'; f.className = 'flash';
+  try {
+    const d = await fetch('/api/calibration/reset?confirm=RESET', { method: 'POST' }).then(r => r.json());
+    if (d.error) {
+      f.textContent = '✘ ' + d.error; f.className = 'flash err';
+    } else {
+      f.textContent = `✔ Reset: ${d.calibration_rows_deleted} calib + ${d.snapshot_rows_deleted} snapshot rows deleted.`;
+      f.className = 'flash ok';
+    }
+  } catch(e) {
+    f.textContent = '✘ ' + e.message; f.className = 'flash err';
+  } finally {
+    btn.disabled = false;
+    setTimeout(() => { f.textContent = ''; f.className = 'flash'; }, 8000);
+  }
+}
+
 // ── TAB SWITCHING ─────────────────────────────────────────────────
 const TAB_NAMES = ['overview','chart','explain','trade','news','watchlist','calib'];
 function switchTab(name) {
@@ -2199,6 +2312,15 @@ document.getElementById('screenerBody').addEventListener('animationend', e => {
     e.target.classList.remove('row-updated');
   }
 }, true); // capture phase so it catches events on <tr> children too
+
+// Delegated handlers for data-log-ticker / data-wl-ticker buttons.
+// Avoids ticker-injection via inline onclick (e.g. M&M → "M&M" breaks JS string).
+document.addEventListener('click', e => {
+  const logBtn = e.target.closest('[data-log-ticker]');
+  if (logBtn) { logSignal(logBtn.dataset.logTicker); return; }
+  const wlBtn = e.target.closest('[data-wl-ticker]');
+  if (wlBtn) { addWLDirect(wlBtn.dataset.wlTicker); return; }
+});
 
 // Single, stable event delegation for ticker clicks.
 // Attached once on #screenerTable which is never re-rendered,
